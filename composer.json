@@ -1,0 +1,48 @@
+{
+    "name": "karnoweb/commerce",
+    "description": "Domain Commerce package for Laravel: orders, invoices, payments, wallets, discounts. Data and services only — no host UI.",
+    "type": "library",
+    "license": "MIT",
+    "keywords": ["laravel", "commerce", "orders", "invoices", "payments"],
+    "authors": [{"name": "Karnoweb", "email": "info@karnoweb.com"}],
+    "version": "13.0.0",
+    "require": {
+        "php": "^8.3",
+        "illuminate/console": "^13.0",
+        "illuminate/database": "^13.0",
+        "illuminate/events": "^13.0",
+        "illuminate/support": "^13.0",
+        "karnoweb/translation": "^13.0"
+    },
+    "require-dev": {
+        "orchestra/testbench": "^11.0",
+        "phpunit/phpunit": "^11.0|^12.0|^13.0",
+        "laravel/pint": "^1.18"
+    },
+    "autoload": {
+        "psr-4": {
+            "Karnoweb\\Commerce\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Karnoweb\\Commerce\\Tests\\": "tests/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Karnoweb\\Commerce\\CommerceServiceProvider"
+            ],
+            "aliases": {
+                "Commerce": "Karnoweb\\Commerce\\Facades\\Commerce"
+            }
+        }
+    },
+    "scripts": {
+        "test": "phpunit",
+        "pint": "pint --format agent"
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}
