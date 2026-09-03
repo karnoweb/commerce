@@ -3,11 +3,12 @@
 ```bash
 composer require karnoweb/commerce:^13.0
 php artisan vendor:publish --tag=commerce-config
-php artisan vendor:publish --tag=commerce-lang   # اختیاری
+php artisan vendor:publish --tag=commerce-migrations   # الزامی
+php artisan vendor:publish --tag=commerce-lang         # اختیاری
 php artisan migrate
 ```
 
-مایگریشن‌ها از پکیج لود می‌شوند. پیش‌نیاز جداول میزبان/shop مثل `users`، `products`، `addresses`، `branches` بسته به FKهای پروژه باید از قبل آماده باشند.
+مایگریشن‌ها با تاریخ ثابت `2022_01_01_200*` پابلیش می‌شوند تا زود اجرا شوند و نام فایل‌ها پایدار بماند. پیش‌نیاز جداول میزبان/shop مثل `users`، `products`، `addresses`، `branches` بسته به FKهای پروژه باید از قبل آماده باشند.
 
 ```env
 COMMERCE_TABLE_PREFIX=
