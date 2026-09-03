@@ -5,7 +5,7 @@
     "license": "MIT",
     "keywords": ["laravel", "commerce", "orders", "invoices", "payments"],
     "authors": [{"name": "Karnoweb", "email": "info@karnoweb.com"}],
-    "version": "13.0.0",
+    "version": "13.0.1",
     "require": {
         "php": "^8.3",
         "illuminate/console": "^13.0",

@@ -1,0 +1,17 @@
+# کیف پول و تخفیف
+
+## Wallet
+
+کیف پول با morph `reference` به مالک (معمولاً User) و `branch_id` اختیاری. تراکنش‌ها در `WalletTransaction` با `amount`، `sign` (بستانکار/بدهکار)، `type` و morph `transactionable`.
+
+منطق موجودی و قفل همزمانی را در Action/سرویس میزبان پیاده کنید؛ مدل‌ها persistence هستند.
+
+## Discount
+
+کد تخفیف با نوع `percentage` یا `amount`، سقف استفاده، حداقل سفارش، بازهٔ اعتبار و فلگ فعال.
+
+Pivot `discount_user_group` در مایگریشن هست؛ رابطهٔ Eloquent گروه‌ها معمولاً روی subclass میزبان اضافه می‌شود. **ارزیابی اینکه کد روی سبد اعمال شود** در سرویس میزبان است، نه داخل این پکیج.
+
+## روش ارسال و پرداخت
+
+`ShippingMethod` و `PaymentMethod` با SoftDeletes و `scopeActive` (`published`). عنوان/توضیح ارسال از `HasTranslation` پشتیبانی می‌کند.
