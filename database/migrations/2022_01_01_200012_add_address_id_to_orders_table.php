@@ -6,16 +6,17 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
-return new class extends Migration {
+return new class extends Migration
+{
     public function up(): void
     {
         Schema::table('orders', function (Blueprint $table): void {
             if (! Schema::hasColumn('orders', 'address_id')) {
-                $table->foreignId('address_id')
+                // Soft host key: addresses live on the host app.
+                $table->unsignedBigInteger('address_id')
                     ->nullable()
                     ->after('user_id')
-                    ->constrained('addresses')
-                    ->nullOnDelete();
+                    ->index();
             }
         });
     }
@@ -24,7 +25,8 @@ return new class extends Migration {
     {
         Schema::table('orders', function (Blueprint $table): void {
             if (Schema::hasColumn('orders', 'address_id')) {
-                $table->dropConstrainedForeignId('address_id');
+                $table->dropIndex(['address_id']);
+                $table->dropColumn('address_id');
             }
         });
     }

@@ -2,20 +2,20 @@
 
 declare(strict_types=1);
 
-use App\Enums\BooleanEnum;
-use App\Enums\ShippingMethodDriverEnum;
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
-return new class extends Migration {
+return new class extends Migration
+{
     public function up(): void
     {
         Schema::create('shipping_methods', function (Blueprint $table) {
             $table->id();
             // translation: title, description
             $table->text('languages')->nullable();
-            $table->string('driver')->default(ShippingMethodDriverEnum::STANDARD->value);
+            // 'standard' mirrors host ShippingMethodDriverEnum::STANDARD (no host enum dependency).
+            $table->string('driver')->default('standard');
             $table->decimal('price', 15)->default(0);
             $table->decimal('free_threshold', 15)->nullable();  // Free shipping if order > this
             $table->decimal('min_order_amount', 15)->nullable();
@@ -23,7 +23,7 @@ return new class extends Migration {
             $table->unsignedSmallInteger('estimated_days')->nullable();
             $table->unsignedInteger('ordering')->default(0);
             $table->json('extra_attributes')->nullable();
-            $table->boolean('published')->default(BooleanEnum::ENABLE->value);
+            $table->boolean('published')->default(true);
             $table->softDeletes();
             $table->timestamps();
         });

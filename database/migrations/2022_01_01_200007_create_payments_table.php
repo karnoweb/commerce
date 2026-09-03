@@ -6,7 +6,8 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
-return new class extends Migration {
+return new class extends Migration
+{
     public function up(): void
     {
         if (Schema::hasTable('payments')) {
@@ -15,7 +16,8 @@ return new class extends Migration {
 
         Schema::create('payments', function (Blueprint $table): void {
             $table->id();
-            $table->foreignId('user_id')->constrained('users')->cascadeOnDelete();
+            // Soft host key: user lives on the host app (indexed via composite below).
+            $table->unsignedBigInteger('user_id');
             $table->foreignId('order_id')->nullable()->constrained('orders')->nullOnDelete();
             $table->decimal('amount', 10, 2)->default(0);
             $table->date('scheduled_date')->nullable();

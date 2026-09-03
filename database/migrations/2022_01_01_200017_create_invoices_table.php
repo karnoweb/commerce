@@ -6,14 +6,16 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
-return new class extends Migration {
+return new class extends Migration
+{
     public function up(): void
     {
         Schema::create('invoices', function (Blueprint $table) {
             $table->id();
             $table->string('invoice_number')->unique();
-            $table->foreignId('branch_id')->default(1)->index()->constrained('branches')->cascadeOnDelete();
-            $table->foreignId('user_id')->nullable()->index()->constrained()->nullOnDelete();
+            // Soft host keys: branch and user live on the host app.
+            $table->unsignedBigInteger('branch_id')->default(1)->index();
+            $table->unsignedBigInteger('user_id')->nullable()->index();
             $table->foreignId('order_id')->nullable()->index()->constrained()->nullOnDelete();
             $table->decimal('amount', 12, 2);
             $table->decimal('tax_amount', 12, 2)->default(0);

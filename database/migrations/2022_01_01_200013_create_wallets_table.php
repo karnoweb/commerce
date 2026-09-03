@@ -6,15 +6,17 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
-return new class extends Migration {
+return new class extends Migration
+{
     public function up(): void
     {
         Schema::create('wallets', function (Blueprint $table) {
             $table->id();
             $table->morphs('reference');
-            $table->foreignId('branch_id')->index()->constrained('branches')->cascadeOnDelete();
+            // Soft host key: branches live on the host app.
+            $table->unsignedBigInteger('branch_id')->index();
             $table->boolean('primary')->default(false)->index();
-            $table->schemalessAttributes('extra_attributes');
+            $table->json('extra_attributes')->nullable();
             $table->softDeletes();
             $table->timestamps();
 

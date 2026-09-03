@@ -7,18 +7,27 @@ use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
-return new class extends Migration {
+return new class extends Migration
+{
     public function up(): void
     {
         Schema::table('orders', function (Blueprint $table): void {
-            $table->foreignId('branch_id')->nullable()->after('user_id')->constrained('branches')->nullOnDelete();
+            // Soft host key: branches live on the host app.
+            $table->unsignedBigInteger('branch_id')->nullable()->after('user_id');
             $table->index('branch_id');
         });
 
         Schema::table('payments', function (Blueprint $table): void {
-            $table->foreignId('branch_id')->nullable()->after('user_id')->constrained('branches')->nullOnDelete();
+            // Soft host key: branches live on the host app.
+            $table->unsignedBigInteger('branch_id')->nullable()->after('user_id');
             $table->index('branch_id');
         });
+
+        // Backfill is a best-effort host integration: skip entirely when the host
+        // hasn't provided a "branches" table (e.g. standalone package install/tests).
+        if (! Schema::hasTable('branches')) {
+            return;
+        }
 
         $defaultBranchId = DB::table('branches')->where('is_default', true)->value('id')
             ?? DB::table('branches')->orderBy('id')->value('id');
@@ -68,11 +77,13 @@ return new class extends Migration {
     public function down(): void
     {
         Schema::table('payments', function (Blueprint $table): void {
-            $table->dropConstrainedForeignId('branch_id');
+            $table->dropIndex(['branch_id']);
+            $table->dropColumn('branch_id');
         });
 
         Schema::table('orders', function (Blueprint $table): void {
-            $table->dropConstrainedForeignId('branch_id');
+            $table->dropIndex(['branch_id']);
+            $table->dropColumn('branch_id');
         });
     }
 };

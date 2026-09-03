@@ -6,7 +6,8 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
-return new class extends Migration {
+return new class extends Migration
+{
     public function up(): void
     {
         Schema::table('orders', function (Blueprint $table) {
@@ -14,7 +15,7 @@ return new class extends Migration {
                 $table->date('order_date')->nullable()->after('status');
             }
             if (! Schema::hasColumn('orders', 'extra_attributes')) {
-                $table->schemalessAttributes('extra_attributes')->after('note');
+                $table->json('extra_attributes')->nullable()->after('note');
             }
         });
     }

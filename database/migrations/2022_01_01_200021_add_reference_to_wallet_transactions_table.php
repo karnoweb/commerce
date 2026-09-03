@@ -10,7 +10,8 @@ use Illuminate\Support\Facades\Schema;
  * Idempotency key for wallet mutations. Null allowed for legacy rows;
  * non-null references must be unique.
  */
-return new class extends Migration {
+return new class extends Migration
+{
     public function up(): void
     {
         Schema::table('wallet_transactions', function (Blueprint $table) {

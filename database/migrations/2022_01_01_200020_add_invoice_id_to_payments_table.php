@@ -14,7 +14,8 @@ use Illuminate\Support\Facades\Schema;
  * - order_id remains for backward compatibility / denormalized lookup; nullable so
  *   standalone invoices can receive payments without an Order.
  */
-return new class extends Migration {
+return new class extends Migration
+{
     public function up(): void
     {
         Schema::table('payments', function (Blueprint $table) {
