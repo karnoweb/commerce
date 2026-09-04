@@ -18,13 +18,19 @@ use Karnoweb\Commerce\Services\PaymentService;
  * always settle a bill); confirm() records a gateway outcome the host
  * already obtained (Commerce never calls a gateway itself).
  *
+ * forOrder() is optional: when omitted, PaymentService copies order_id
+ * from the invoice when the invoice is order-bound.
+ *
+ * extra() is stored on payments.extra_attributes (cashbox_id, cashier_id,
+ * terminal_id, or any host payload).
+ *
  * @example
  * $payment = Commerce::payments()
  *     ->forInvoice($invoice)
- *     ->forOrder($order)
  *     ->methodId(1)
  *     ->type(PaymentTypeEnum::ONLINE)
  *     ->amount((int) $invoice->amount)
+ *     ->extra(['cashbox_id' => 5, 'cashier_id' => 12])
  *     ->idempotencyKey('pay:invoice:'.$invoice->id.':attempt:1')
  *     ->initiate();
  *
@@ -44,6 +50,9 @@ class PaymentBuilder
 
     private ?string $idempotencyKey = null;
 
+    /** @var array<string, mixed> */
+    private array $extra = [];
+
     public function __construct(private readonly PaymentService $paymentService) {}
 
     /** Required before initiate() — a payment always settles an invoice. */
@@ -54,10 +63,26 @@ class PaymentBuilder
         return $this;
     }
 
-    /** Optional denormalized order link (null for a standalone-invoice payment). */
+    /**
+     * Optional denormalized order link. When omitted, PaymentService sets
+     * order_id from invoice.order_id (null for a standalone invoice).
+     */
     public function forOrder(Order $order): self
     {
         $this->order = $order;
+
+        return $this;
+    }
+
+    /**
+     * Host-specific attributes stored on payments.extra_attributes
+     * (cashbox_id, cashier_id, terminal_id, ...).
+     *
+     * @param  array<string, mixed>  $extra
+     */
+    public function extra(array $extra): self
+    {
+        $this->extra = $extra;
 
         return $this;
     }
@@ -108,6 +133,7 @@ class PaymentBuilder
             $this->type,
             $this->amount,
             $this->idempotencyKey,
+            $this->extra,
         );
     }
 

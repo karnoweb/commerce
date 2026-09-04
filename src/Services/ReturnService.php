@@ -6,7 +6,8 @@ namespace Karnoweb\Commerce\Services;
 
 use Illuminate\Support\Facades\DB;
 use Karnoweb\Commerce\DTOs\ReturnLineInput;
-use Karnoweb\Commerce\Enums\OrderStatusEnum;
+use Karnoweb\Commerce\DTOs\ReturnResult;
+use Karnoweb\Commerce\Enums\FinancialStatusEnum;
 use Karnoweb\Commerce\Enums\PaymentStatusEnum;
 use Karnoweb\Commerce\Events\ReturnCreated;
 use Karnoweb\Commerce\Exceptions\CannotReturnWithoutLines;
@@ -15,8 +16,11 @@ use Karnoweb\Commerce\Exceptions\ReturnLineNotFoundInOrder;
 use Karnoweb\Commerce\Exceptions\ReturnQuantityExceedsAvailable;
 use Karnoweb\Commerce\Models\Order;
 use Karnoweb\Commerce\Models\OrderReturn;
+use Karnoweb\Commerce\Models\Wallet;
+use Karnoweb\Commerce\Models\WalletTransaction;
 use Karnoweb\Commerce\Support\CommerceEventDispatcher;
 use Karnoweb\Commerce\Support\ResolvesConfiguredModels;
+use RuntimeException;
 
 /**
  * Canonical quantity-based return flow: one or more ReturnLineInput lines,
@@ -24,9 +28,8 @@ use Karnoweb\Commerce\Support\ResolvesConfiguredModels;
  * much of that line is still returnable (sold - already returned) and
  * persisted as an OrderReturn + OrderReturnLine rows. Optionally credits a
  * wallet for the computed (or overridden) total. Once the sum of an order's
- * returns reaches its total, the order (and any PAID payments) transition to
- * REFUNDED — same rule RefundService uses, since both write to the same
- * order_returns.total_amount column.
+ * returns reaches its total AND the order is paid, the order (and any PAID
+ * payments) transition to REFUNDED — pending → refunded is not allowed.
  *
  * Distinct from the legacy, amount-only RefundService: use this service
  * ("returns", not "refund") whenever the caller knows *which* lines and
@@ -36,7 +39,10 @@ class ReturnService
 {
     use ResolvesConfiguredModels;
 
-    public function __construct(private readonly WalletService $walletService) {}
+    public function __construct(
+        private readonly WalletService $walletService,
+        private readonly OrderService $orderService,
+    ) {}
 
     /**
      * @param  list<ReturnLineInput>  $lines
@@ -54,14 +60,52 @@ class ReturnService
         ?array $toWallet = null,
         int|float|null $amountOverride = null,
     ): OrderReturn {
-        return DB::transaction(function () use ($order, $lines, $idempotencyKey, $toWallet, $amountOverride): OrderReturn {
+        return $this->processInternal($order, $lines, $idempotencyKey, $toWallet, $amountOverride)['orderReturn'];
+    }
+
+    /**
+     * Same as process() with a required wallet credit; returns the wallet
+     * transaction details alongside the OrderReturn.
+     *
+     * @param  list<ReturnLineInput>  $lines
+     * @param  array{user_id: int|string, branch_id: int|string}  $toWallet
+     */
+    public function processToWallet(
+        Order $order,
+        array $lines,
+        array $toWallet,
+        ?string $idempotencyKey = null,
+        int|float|null $amountOverride = null,
+    ): ReturnResult {
+        $result = $this->processInternal($order, $lines, $idempotencyKey, $toWallet, $amountOverride);
+
+        if ($result['wallet'] === null || $result['walletTransaction'] === null) {
+            throw new RuntimeException('Return refund to wallet did not produce a wallet transaction.');
+        }
+
+        return new ReturnResult($result['orderReturn'], $result['wallet'], $result['walletTransaction']);
+    }
+
+    /**
+     * @param  list<ReturnLineInput>  $lines
+     * @param  array{user_id: int|string, branch_id: int|string}|null  $toWallet
+     * @return array{orderReturn: OrderReturn, wallet: Wallet|null, walletTransaction: WalletTransaction|null}
+     */
+    private function processInternal(
+        Order $order,
+        array $lines,
+        ?string $idempotencyKey,
+        ?array $toWallet,
+        int|float|null $amountOverride,
+    ): array {
+        return DB::transaction(function () use ($order, $lines, $idempotencyKey, $toWallet, $amountOverride): array {
             if ($idempotencyKey !== null) {
                 $existing = $this->findByIdempotencyKey($idempotencyKey);
 
                 if ($existing !== null) {
                     $this->assertSamePayload($existing, $order, $idempotencyKey);
 
-                    return $existing;
+                    return $this->hydrateWalletResult($existing);
                 }
             }
 
@@ -137,8 +181,11 @@ class ReturnService
                 ];
             }
 
+            $wallet = null;
+            $walletTransaction = null;
+
             if ($toWallet !== null) {
-                $this->walletService->credit(
+                $walletTransaction = $this->walletService->credit(
                     ownerId: $toWallet['user_id'],
                     branchId: $toWallet['branch_id'],
                     amount: $finalAmount,
@@ -147,6 +194,8 @@ class ReturnService
                     idempotencyKey: $idempotencyKey,
                     type: 'return',
                 );
+                $walletTransaction->load('wallet');
+                $wallet = $walletTransaction->wallet;
             }
 
             $this->maybeTransitionOrderToRefunded($order);
@@ -159,15 +208,19 @@ class ReturnService
                 userId: $order->user_id,
             ));
 
-            return $orderReturn;
+            return [
+                'orderReturn' => $orderReturn,
+                'wallet' => $wallet,
+                'walletTransaction' => $walletTransaction,
+            ];
         });
     }
 
     /**
-     * Once the sum of an order's returns (from either ReturnService or the
-     * legacy RefundService — both write to order_returns.total_amount)
-     * reaches the order total, flip the order and its PAID payments to
-     * REFUNDED.
+     * Once the sum of an order's returns reaches the order total *and*
+     * the order is already paid, flip the order and its PAID payments to
+     * REFUNDED. An unpaid (pending) order is left pending — pending →
+     * refunded is not a legal financial transition.
      */
     private function maybeTransitionOrderToRefunded(Order $order): void
     {
@@ -175,16 +228,56 @@ class ReturnService
 
         $alreadyReturned = (int) $orderReturnClass::query()->where('order_id', $order->id)->sum('total_amount');
 
-        if ($alreadyReturned >= (int) $order->total_amount) {
-            $order->update(['status' => OrderStatusEnum::REFUNDED]);
-
-            $paymentClass = static::model('payment');
-
-            $paymentClass::query()
-                ->where('order_id', $order->id)
-                ->where('status', PaymentStatusEnum::PAID)
-                ->update(['status' => PaymentStatusEnum::REFUNDED]);
+        if ($alreadyReturned < (int) $order->total_amount) {
+            return;
         }
+
+        $order->refresh();
+
+        if ($order->financial_status !== FinancialStatusEnum::PAID) {
+            return;
+        }
+
+        $this->orderService->transitionTo($order, FinancialStatusEnum::REFUNDED);
+
+        $paymentClass = static::model('payment');
+
+        $paymentClass::query()
+            ->where('order_id', $order->id)
+            ->where('status', PaymentStatusEnum::PAID)
+            ->update(['status' => PaymentStatusEnum::REFUNDED]);
+
+        $invoiceClass = static::model('invoice');
+
+        $invoiceClass::query()
+            ->where('order_id', $order->id)
+            ->where('financial_status', 'paid')
+            ->update(['financial_status' => 'refunded']);
+    }
+
+    /**
+     * @return array{orderReturn: OrderReturn, wallet: Wallet|null, walletTransaction: WalletTransaction|null}
+     */
+    private function hydrateWalletResult(OrderReturn $orderReturn): array
+    {
+        $walletTransactionClass = static::model('wallet_transaction');
+
+        /** @var WalletTransaction|null $tx */
+        $tx = $walletTransactionClass::query()
+            ->where('transactionable_type', $orderReturn->getMorphClass())
+            ->where('transactionable_id', $orderReturn->id)
+            ->latest('id')
+            ->first();
+
+        if ($tx !== null) {
+            $tx->load('wallet');
+        }
+
+        return [
+            'orderReturn' => $orderReturn,
+            'wallet' => $tx?->wallet,
+            'walletTransaction' => $tx,
+        ];
     }
 
     private function findByIdempotencyKey(string $key): ?OrderReturn

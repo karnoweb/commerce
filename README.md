@@ -37,15 +37,15 @@ php artisan migrate
 
 ```php
 use Karnoweb\Commerce\Facades\Commerce;
-use Karnoweb\Commerce\Enums\OrderStatusEnum;
+use Karnoweb\Commerce\Enums\FinancialStatusEnum;
 use Karnoweb\Commerce\Support\CommerceEventDispatcher;
 use Karnoweb\Commerce\Events\OrderCreated;
 
 $order = Commerce::model('order')::query()->create([
     'order_number' => 'ORD-1001',
     'user_id' => $userId,
-    'status' => OrderStatusEnum::PENDING,
-    'total' => 1_050_000,
+    'financial_status' => FinancialStatusEnum::PENDING,
+    'total_amount' => 1_050_000,
 ]);
 
 CommerceEventDispatcher::dispatch(new OrderCreated(

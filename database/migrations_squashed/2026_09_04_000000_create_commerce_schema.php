@@ -49,6 +49,10 @@ use Karnoweb\Commerce\Support\CommerceTables;
  *   hard FK. FKs are only ever declared between tables this package
  *   itself owns (orders -> order_lines, order_returns -> order_return_lines,
  *   invoices -> payments -> transactions, order_return_lines -> return_reasons).
+ * - orders.financial_status is the strict money lifecycle (pending/paid/
+ *   cancelled/refunded); orders.workflow_status is a free-form host label.
+ * - document_sequences owns the default sequential ORD-/INV- counters
+ *   (scoped by key + soft branch + year).
  */
 return new class extends Migration
 {
@@ -70,11 +74,13 @@ return new class extends Migration
         $this->createWalletTransactionsTable();
         $this->createDiscountsTable();
         $this->createDiscountUserGroupTable();
+        $this->createDocumentSequencesTable();
     }
 
     public function down(): void
     {
         // Children before parents.
+        Schema::dropIfExists(CommerceTables::name('document_sequences'));
         Schema::dropIfExists(CommerceTables::name('discount_user_group'));
         Schema::dropIfExists(CommerceTables::name('discounts'));
         Schema::dropIfExists(CommerceTables::name('wallet_transactions'));
@@ -105,7 +111,12 @@ return new class extends Migration
             $table->unsignedBigInteger('sales_unit_id')->nullable()->index();
             $table->unsignedBigInteger('warehouse_id')->nullable()->index();
             $table->string('type')->default('sale')->index();
-            $table->string('status')->default('pending')->index();
+            // Financial invariants (pending/paid/cancelled/refunded) are
+            // enforced by FinancialStateMachine. workflow_status is a
+            // free-form host label (cooking, shipped, ...) and is never
+            // validated by this package.
+            $table->string('financial_status')->default('pending')->index();
+            $table->string('workflow_status')->nullable()->index();
             // Only subtotal/total are stored — no discount/tax/shipping
             // column: those live exclusively in document_adjustments.
             $table->bigInteger('subtotal_amount')->default(0);
@@ -195,6 +206,7 @@ return new class extends Migration
             $table->bigInteger('amount')->default(0);
             $table->date('invoice_date')->nullable();
             $table->string('status')->default('issued')->index();
+            $table->string('financial_status')->default('issued')->index();
             $table->json('extra_attributes')->nullable();
             $table->timestamps();
             $table->softDeletes();
@@ -383,6 +395,26 @@ return new class extends Migration
             $table->timestamps();
 
             $table->unique(['discount_id', 'user_group_id']);
+        });
+    }
+
+    /**
+     * Sequential document numbers (ORD-… / INV-…) without an external
+     * sequence service. Scoped per (key, branch, year) so two branches
+     * (or years) never share a counter. scope_branch_id is a soft host
+     * key — never a hard FK.
+     */
+    private function createDocumentSequencesTable(): void
+    {
+        Schema::create(CommerceTables::name('document_sequences'), function (Blueprint $table): void {
+            $table->id();
+            $table->string('key'); // order_number | invoice_number
+            $table->unsignedBigInteger('scope_branch_id')->nullable();
+            $table->integer('scope_year')->nullable();
+            $table->unsignedBigInteger('current_number')->default(0);
+            $table->timestamps();
+
+            $table->unique(['key', 'scope_branch_id', 'scope_year'], 'document_sequences_key_scope_unique');
         });
     }
 };

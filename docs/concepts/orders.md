@@ -13,7 +13,7 @@ User
 
 ## Order
 
-وضعیت‌ها (`OrderStatusEnum`): `cart`, `pending`, `paid`, `processing`, `shipped`, `delivered`, `cancelled`, `refunded`, `expired`.
+وضعیت مالی (`FinancialStatusEnum` روی `orders.financial_status`): `pending`, `paid`, `cancelled`, `refunded` — انتقال‌ها سخت‌اند (`pending → paid|cancelled`، `paid → refunded`). `workflow_status` یک برچسب آزاد میزبان است (`cooking`, `shipped`, ...) و توسط state machine بررسی نمی‌شود. `OrderStatusEnum` برای سازگاری نگه داشته شده؛ ستون `orders.status` حذف شده است.
 
 انواع (`OrderTypeEnum`): `sale`, `sale_return`, `purchase`, `purchase_return`.
 

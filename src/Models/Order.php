@@ -7,7 +7,7 @@ namespace Karnoweb\Commerce\Models;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
-use Karnoweb\Commerce\Enums\OrderStatusEnum;
+use Karnoweb\Commerce\Enums\FinancialStatusEnum;
 use Karnoweb\Commerce\Enums\OrderTypeEnum;
 use Karnoweb\Commerce\Models\Concerns\HasAdjustments;
 use Karnoweb\Commerce\Models\Concerns\HasDimensions;
@@ -33,7 +33,8 @@ class Order extends BaseModel
         'sales_unit_id',
         'warehouse_id',
         'type',
-        'status',
+        'financial_status',
+        'workflow_status',
         'subtotal_amount',
         'total_amount',
         'currency',
@@ -46,7 +47,7 @@ class Order extends BaseModel
     {
         return [
             'type' => OrderTypeEnum::class,
-            'status' => OrderStatusEnum::class,
+            'financial_status' => FinancialStatusEnum::class,
             'subtotal_amount' => 'integer',
             'total_amount' => 'integer',
             'paid_at' => 'datetime',

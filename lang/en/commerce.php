@@ -14,5 +14,6 @@ return [
         'return_quantity_exceeds_available' => 'Return quantity (:requested) exceeds the quantity available to return (:available).',
         'cannot_return_without_lines' => 'Cannot create a return: at least one addLine() call is required.',
         'return_line_not_found_in_order' => 'Order line [:line] does not belong to order [:order].',
+        'invalid_financial_transition' => 'Cannot transition financial status from [:from] to [:to].',
     ],
 ];

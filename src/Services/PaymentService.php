@@ -7,7 +7,7 @@ namespace Karnoweb\Commerce\Services;
 use DateTimeInterface;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
-use Karnoweb\Commerce\Enums\OrderStatusEnum;
+use Karnoweb\Commerce\Enums\FinancialStatusEnum;
 use Karnoweb\Commerce\Enums\PaymentStatusEnum;
 use Karnoweb\Commerce\Enums\PaymentTypeEnum;
 use Karnoweb\Commerce\Events\InvoiceFullyPaid;
@@ -17,10 +17,12 @@ use Karnoweb\Commerce\Events\PaymentInitiated;
 use Karnoweb\Commerce\Exceptions\CannotConfirmAlreadyPaidPayment;
 use Karnoweb\Commerce\Exceptions\CannotPayCancelledOrder;
 use Karnoweb\Commerce\Exceptions\IdempotencyConflict;
+use Karnoweb\Commerce\Exceptions\InvalidFinancialTransition;
 use Karnoweb\Commerce\Models\Invoice;
 use Karnoweb\Commerce\Models\Order;
 use Karnoweb\Commerce\Models\Payment;
 use Karnoweb\Commerce\Support\CommerceEventDispatcher;
+use Karnoweb\Commerce\Support\FinancialStateMachine;
 use Karnoweb\Commerce\Support\ResolvesConfiguredModels;
 
 /**
@@ -28,16 +30,24 @@ use Karnoweb\Commerce\Support\ResolvesConfiguredModels;
  * Commerce never talks to a gateway — the host does that and reports the
  * outcome back here via confirm(). A payment always settles an Invoice
  * (invoice_id required); $order is an optional denormalized convenience —
- * standalone-invoice payments pass null.
+ * when omitted, order_id is copied from invoice.order_id if the invoice
+ * is order-bound. extra_attributes stores host fields (cashbox_id, ...).
  */
 class PaymentService
 {
     use ResolvesConfiguredModels;
 
+    public function __construct(private readonly OrderService $orderService) {}
+
     /**
      * Create a PENDING payment against an invoice (optionally order-bound).
+     * forOrder is optional: if $order is null, order_id/user_id/branch_id
+     * are taken from the invoice.
+     *
+     * @param  array<string, mixed>|null  $extra
      *
      * @throws CannotPayCancelledOrder
+     * @throws InvalidFinancialTransition
      * @throws IdempotencyConflict
      */
     public function initiate(
@@ -47,8 +57,9 @@ class PaymentService
         PaymentTypeEnum|string $type,
         int|float $amount,
         ?string $idempotencyKey = null,
+        ?array $extra = null,
     ): Payment {
-        return DB::transaction(function () use ($invoice, $order, $paymentMethodId, $type, $amount, $idempotencyKey): Payment {
+        return DB::transaction(function () use ($invoice, $order, $paymentMethodId, $type, $amount, $idempotencyKey, $extra): Payment {
             if ($idempotencyKey !== null) {
                 $existing = $this->findPaymentByIdempotencyKey($idempotencyKey);
 
@@ -59,8 +70,10 @@ class PaymentService
                 }
             }
 
-            if ($order !== null && $order->status === OrderStatusEnum::CANCELLED) {
-                throw new CannotPayCancelledOrder($order->id);
+            $resolvedOrder = $order ?? $this->orderFromInvoice($invoice);
+
+            if ($resolvedOrder !== null) {
+                $this->assertOrderAcceptsPayment($resolvedOrder);
             }
 
             $amountInt = (int) round($amount);
@@ -71,13 +84,14 @@ class PaymentService
             $payment = $paymentClass::create([
                 'idempotency_key' => $idempotencyKey,
                 'invoice_id' => $invoice->id,
-                'order_id' => $order?->id ?? $invoice->order_id,
-                'user_id' => $order?->user_id ?? $invoice->user_id,
-                'branch_id' => $order?->branch_id ?? $invoice->branch_id,
+                'order_id' => $resolvedOrder?->id ?? $invoice->order_id,
+                'user_id' => $resolvedOrder?->user_id ?? $invoice->user_id,
+                'branch_id' => $resolvedOrder?->branch_id ?? $invoice->branch_id,
                 'payment_method_id' => $paymentMethodId,
                 'amount' => $amountInt,
                 'type' => $type instanceof PaymentTypeEnum ? $type : PaymentTypeEnum::from($type),
                 'status' => PaymentStatusEnum::PENDING,
+                'extra_attributes' => $extra === [] || $extra === null ? null : $extra,
             ]);
 
             CommerceEventDispatcher::dispatch(new PaymentInitiated(
@@ -105,6 +119,7 @@ class PaymentService
      * @param  array<string, mixed>  $gatewayPayload
      *
      * @throws CannotConfirmAlreadyPaidPayment
+     * @throws InvalidFinancialTransition
      */
     public function confirm(
         Payment $payment,
@@ -143,8 +158,10 @@ class PaymentService
 
             $order = $payment->order_id !== null ? static::model('order')::find($payment->order_id) : null;
 
-            if ($order !== null) {
-                $order->update(['status' => OrderStatusEnum::PAID, 'paid_at' => $paidAt ?? now()]);
+            if ($order instanceof Order) {
+                $this->orderService->transitionTo($order, FinancialStatusEnum::PAID, [
+                    'paid_at' => $paidAt ?? now(),
+                ]);
 
                 CommerceEventDispatcher::dispatch(new OrderPaid(
                     orderId: $order->id,
@@ -154,8 +171,14 @@ class PaymentService
 
             $invoice = static::model('invoice')::find($payment->invoice_id);
 
-            if ($invoice !== null) {
-                $invoice->update(['status' => 'paid']);
+            if ($invoice instanceof Invoice) {
+                $from = $invoice->financial_status ?? $invoice->status ?? 'issued';
+                FinancialStateMachine::assertCanTransition($from, 'paid');
+
+                $invoice->update([
+                    'status' => 'paid',
+                    'financial_status' => 'paid',
+                ]);
 
                 CommerceEventDispatcher::dispatch(new InvoiceFullyPaid(
                     invoiceId: $invoice->id,
@@ -173,6 +196,33 @@ class PaymentService
 
             return $payment->refresh();
         });
+    }
+
+    private function orderFromInvoice(Invoice $invoice): ?Order
+    {
+        if ($invoice->order_id === null) {
+            return null;
+        }
+
+        $orderClass = static::model('order');
+
+        return $orderClass::query()->find($invoice->order_id);
+    }
+
+    private function assertOrderAcceptsPayment(Order $order): void
+    {
+        $status = $order->financial_status ?? FinancialStatusEnum::PENDING;
+
+        if ($status === FinancialStatusEnum::CANCELLED) {
+            throw new CannotPayCancelledOrder($order->id);
+        }
+
+        if ($status === FinancialStatusEnum::REFUNDED) {
+            throw new InvalidFinancialTransition(
+                $status instanceof FinancialStatusEnum ? $status->value : (string) $status,
+                FinancialStatusEnum::PAID->value,
+            );
+        }
     }
 
     private function findPaymentByIdempotencyKey(string $key): ?Payment

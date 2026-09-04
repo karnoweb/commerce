@@ -6,7 +6,7 @@ namespace Karnoweb\Commerce\Tests\Feature;
 
 use Illuminate\Support\Facades\Event;
 use Karnoweb\Commerce\Database\Seeders\CommerceSeeder;
-use Karnoweb\Commerce\Enums\OrderStatusEnum;
+use Karnoweb\Commerce\Enums\FinancialStatusEnum;
 use Karnoweb\Commerce\Enums\PaymentStatusEnum;
 use Karnoweb\Commerce\Events\PaymentInitiated;
 use Karnoweb\Commerce\Events\ReturnCreated;
@@ -329,7 +329,7 @@ final class CommerceGenericLineItemsAndReturnsTest extends TestCase
 
         // Only half the total was returned -> order stays PAID, not REFUNDED.
         $order->refresh();
-        $this->assertSame(OrderStatusEnum::PAID, $order->status);
+        $this->assertSame(FinancialStatusEnum::PAID, $order->financial_status);
 
         Event::assertDispatched(ReturnCreated::class, function (ReturnCreated $event) use ($order, $orderReturn): bool {
             return (string) $event->orderId === (string) $order->id
@@ -378,7 +378,7 @@ final class CommerceGenericLineItemsAndReturnsTest extends TestCase
             ->finalizeRefundToWallet(userId: $userId, branchId: $branchId);
 
         $order->refresh();
-        $this->assertSame(OrderStatusEnum::REFUNDED, $order->status);
+        $this->assertSame(FinancialStatusEnum::REFUNDED, $order->financial_status);
         $this->assertSame(PaymentStatusEnum::REFUNDED, $payment->refresh()->status);
     }
 

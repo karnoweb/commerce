@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\Facade;
 use Karnoweb\Commerce\Builders\CartBuilder;
 use Karnoweb\Commerce\Builders\CheckoutBuilder;
 use Karnoweb\Commerce\Builders\InvoiceBuilder;
+use Karnoweb\Commerce\Builders\OrderBuilder;
 use Karnoweb\Commerce\Builders\PaymentBuilder;
 use Karnoweb\Commerce\Builders\RefundBuilder;
 use Karnoweb\Commerce\Builders\ReturnBuilder;
@@ -25,6 +26,7 @@ use Karnoweb\Commerce\Builders\WalletBuilder;
  * @method static RefundBuilder refund() Start processing an amount-only refund (legacy; prefer returns()) (fluent API).
  * @method static ReturnBuilder returns() Start a quantity-based return tied to original sale lines (fluent API).
  * @method static WalletBuilder wallet() Start a wallet credit/debit (fluent API).
+ * @method static OrderBuilder orders() Set workflow_status or cancel a pending order (fluent API).
  *
  * @see \Karnoweb\Commerce\Commerce
  */

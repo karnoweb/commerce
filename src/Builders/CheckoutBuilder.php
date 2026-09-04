@@ -6,15 +6,23 @@ namespace Karnoweb\Commerce\Builders;
 
 use InvalidArgumentException;
 use Karnoweb\Commerce\DTOs\CheckoutResult;
+use Karnoweb\Commerce\DTOs\CheckoutResultWithPayments;
+use Karnoweb\Commerce\Enums\PaymentTypeEnum;
 use Karnoweb\Commerce\Models\Invoice;
 use Karnoweb\Commerce\Models\Order;
 use Karnoweb\Commerce\Services\CheckoutService;
 
 /**
- * Fluent entry point for placing an order from a user's cart. finalize()
- * always creates the order's mandatory invoice — Commerce never leaves an
- * order unbilled. Commerce never talks to a payment gateway — pair this
- * with Commerce::payments() once the host has an outcome to report.
+ * Fluent entry point for placing an order from a user's cart.
+ *
+ * Cart source: order_lines where order_id IS NULL for that user.
+ * finalize() always creates the order's mandatory invoice — Commerce
+ * never leaves an order unbilled. finalizeWithPayments() also writes
+ * 1..n PENDING payment records (no gateway). Confirmation is a
+ * separate Commerce::payments()->confirm() step.
+ *
+ * branchId(null) (or omitting branchId()) is resolved from the bound
+ * CommerceContextResolverContract when the host registered one.
  *
  * @example
  * $result = Commerce::checkout()
@@ -83,7 +91,11 @@ class CheckoutBuilder
         return $this;
     }
 
-    public function branchId(int|string $branchId): self
+    /**
+     * Soft branch key. Pass null (or omit this call) to let the bound
+     * CommerceContextResolverContract supply a default.
+     */
+    public function branchId(int|string|null $branchId): self
     {
         $this->branchId = $branchId;
 
@@ -157,7 +169,10 @@ class CheckoutBuilder
         return $this;
     }
 
-    /** Override the generated order number. */
+    /**
+     * Override the OrderNumberGeneratorContract. When omitted, the
+     * configured sequential generator supplies the value.
+     */
     public function orderNumber(string $orderNumber): self
     {
         $this->orderNumber = $orderNumber;
@@ -187,7 +202,10 @@ class CheckoutBuilder
         return $this;
     }
 
-    /** Override the generated invoice number for the mandatory invoice finalize() creates. */
+    /**
+     * Override the InvoiceNumberGeneratorContract for the mandatory
+     * invoice finalize() creates.
+     */
     public function invoiceNumber(string $invoiceNumber): self
     {
         $this->invoiceNumber = $invoiceNumber;
@@ -209,27 +227,28 @@ class CheckoutBuilder
             throw new InvalidArgumentException('CheckoutBuilder::finalize() requires forUser() before use.');
         }
 
-        $adjustments = [
-            ['key' => 'shipping', 'sign' => 1, 'amount' => $this->shippingAmount, 'payload' => null],
-            ['key' => 'tax', 'sign' => 1, 'amount' => $this->taxAmount, 'payload' => null],
-            ['key' => 'discount', 'sign' => -1, 'amount' => $this->discountAmount, 'payload' => null],
-            ...$this->customAdjustments,
-        ];
+        $result = $this->checkoutService->finalize($this->checkoutPayload());
 
-        $result = $this->checkoutService->finalize([
-            'user_id' => $this->userId,
-            'branch_id' => $this->branchId,
-            'sales_unit_id' => $this->salesUnitId,
-            'warehouse_id' => $this->warehouseId,
-            'order_number' => $this->orderNumber,
-            'idempotency_key' => $this->idempotencyKey,
-            'currency' => $this->currency,
-            'note' => $this->note,
-            'invoice_number' => $this->invoiceNumber,
-            'adjustments' => $adjustments,
-            'dimensions' => $this->dimensions,
-        ]);
+        $this->order = $result->order;
 
+        return $result;
+    }
+
+    /**
+     * Same as finalize(), then create 1..n PENDING payment records
+     * against the new invoice. Each item may include method_id, type,
+     * amount, extra (stored on payments.extra_attributes), and an
+     * optional per-payment idempotency_key.
+     *
+     * @param  list<array{method_id?: int|string|null, type?: PaymentTypeEnum|string, amount: int|float, extra?: array<string, mixed>, idempotency_key?: string|null}>  $payments
+     */
+    public function finalizeWithPayments(array $payments): CheckoutResultWithPayments
+    {
+        if ($this->userId === null) {
+            throw new InvalidArgumentException('CheckoutBuilder::finalizeWithPayments() requires forUser() before use.');
+        }
+
+        $result = $this->checkoutService->finalizeWithPayments($this->checkoutPayload(), $payments);
         $this->order = $result->order;
 
         return $result;
@@ -239,6 +258,43 @@ class CheckoutBuilder
     public function place(): CheckoutResult
     {
         return $this->finalize();
+    }
+
+    /**
+     * @return array{
+     *     user_id: int|string,
+     *     branch_id: int|string|null,
+     *     sales_unit_id: int|string|null,
+     *     warehouse_id: int|string|null,
+     *     order_number: string|null,
+     *     idempotency_key: string|null,
+     *     currency: string|null,
+     *     note: string|null,
+     *     invoice_number: string|null,
+     *     adjustments: list<array{key: string, sign: int, amount: int|float, payload: array|null}>,
+     *     dimensions: array<string, mixed>,
+     * }
+     */
+    private function checkoutPayload(): array
+    {
+        return [
+            'user_id' => $this->userId,
+            'branch_id' => $this->branchId,
+            'sales_unit_id' => $this->salesUnitId,
+            'warehouse_id' => $this->warehouseId,
+            'order_number' => $this->orderNumber,
+            'idempotency_key' => $this->idempotencyKey,
+            'currency' => $this->currency,
+            'note' => $this->note,
+            'invoice_number' => $this->invoiceNumber,
+            'adjustments' => [
+                ['key' => 'shipping', 'sign' => 1, 'amount' => $this->shippingAmount, 'payload' => null],
+                ['key' => 'tax', 'sign' => 1, 'amount' => $this->taxAmount, 'payload' => null],
+                ['key' => 'discount', 'sign' => -1, 'amount' => $this->discountAmount, 'payload' => null],
+                ...$this->customAdjustments,
+            ],
+            'dimensions' => $this->dimensions,
+        ];
     }
 
     /**

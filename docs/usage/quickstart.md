@@ -13,7 +13,8 @@ $branchId = 3;
 $salesUnitId = 77;   // اختیاری — کدام واحد فروش این سفارش را ثبت کرده
 $warehouseId = 12;   // اختیاری — کدام انبار درگیر است
 
-// 1) افزودن به سبد — OrderLine با order_id = null.
+// 1) افزودن به سبد.
+//    منبع سبد = ردیف‌های order_lines که order_id آن‌ها NULL است برای همین user_id.
 //    itemType یک رشتهٔ آزاد است ('shop.product', 'custom.text', ...)؛
 //    itemId ارجاع soft (بدون FK)؛ itemName اسنپ‌شات الزامی.
 //    lineTotal = quantity x unitPrice — بدون ستون تخفیف/مالیات در سطح خط.
@@ -45,21 +46,38 @@ $result = Commerce::checkout()
     ->idempotencyKey('checkout:user:9001:cart:active')
     ->finalize();
 
-$order = $result->order;     // Order
+$order = $result->order;     // Order — financial_status=pending
 $invoice = $result->invoice; // Invoice — همیشه ساخته می‌شود، هرگز null نیست
 
 $order->shippingAmount(); // 50000 — accessor محاسبه‌شده از document_adjustments، نه ستون DB
 
-// 3) شروع پرداخت — Payment(PENDING) می‌سازد. پرداخت همیشه به یک فاکتور
-//    وصل است (invoice_id الزامی)؛ order فقط یک لینک denormalized اختیاری است.
+// 2b) همان finalize، به‌علاوه ۱..n رکورد پرداخت PENDING (بدون تماس با درگاه).
+//     تأیید همچنان گام جداست: Commerce::payments()->confirm().
+$paidCheckout = Commerce::checkout()
+    ->forUser($userId)
+    ->branchId($branchId) // یا branchId(null) — از CommerceContextResolverContract اگر bind شده باشد
+    ->finalizeWithPayments([
+        [
+            'method_id' => 1,
+            'type' => PaymentTypeEnum::CASH,
+            'amount' => 300_000,
+            'extra' => ['cashbox_id' => 5, 'cashier_id' => 12],
+        ],
+    ]);
+$paidCheckout->payments; // list<Payment> — همه PENDING/INITIATED
+
+// 3) شروع پرداخت جداگانه — Payment(PENDING) می‌سازد. پرداخت همیشه به یک فاکتور
+//    وصل است (invoice_id الزامی). forOrder() اختیاری است: اگر فاکتور order_id
+//    داشته باشد PaymentService همان را روی payment می‌نویسد.
 $payment = Commerce::payments()
     ->forInvoice($invoice)
-    ->forOrder($order)
     ->methodId(1)
     ->type(PaymentTypeEnum::ONLINE)
     ->amount((int) $invoice->amount)
+    ->extra(['cashbox_id' => 5, 'cashier_id' => 12, 'terminal_id' => 3])
     ->idempotencyKey('pay:invoice:'.$invoice->id.':attempt:1')
     ->initiate();
+// $payment->extra_attributes === ['cashbox_id' => 5, ...]
 
 // 4) تأیید نتیجهٔ درگاه که میزبان گرفته است.
 //    Payment(PAID)، Order(PAID)، Invoice(paid)، Transaction (payment_id-محور) می‌سازد،
@@ -83,12 +101,78 @@ $return = Commerce::returns()
     ->forOrder($order)
     ->idempotencyKey('return:order:'.$order->id.':v1')
     ->addLine(orderLineId: $firstLine->id, quantity: 1, reasonNote: 'Customer return')
-    ->finalizeRefundToWallet(userId: $userId, branchId: $branchId);
+    ->finalizeRefundToWallet(userId: $userId, branchId: $branchId); // OrderReturn (BC)
+
+$returnResult = Commerce::returns()
+    ->forOrder($order)
+    ->addLine(orderLineId: $firstLine->id, quantity: 1)
+    ->finalizeRefundToWalletResult(userId: $userId, branchId: $branchId);
+// ReturnResult { orderReturn, wallet, walletTransaction }
+```
+
+## شماره سفارش/فاکتور
+
+اگر `->orderNumber()` / `->invoiceNumber()` ندهید، ژنراتور ترتیبی از جدول `document_sequences` مقدار می‌سازد (`ORD-{year}-{branch?}-{sequence}` / `INV-...`). فرمت از config است:
+
+```php
+// config/commerce.php
+'numbers' => [
+    'order' => ['format' => 'ORD-{year}-{branch}-{sequence}', 'padding' => 6],
+    'invoice' => ['format' => 'INV-{year}-{branch}-{sequence}', 'padding' => 6],
+],
+
+Commerce::checkout()->forUser($userId)->orderNumber('POS-99')->finalize(); // override
+```
+
+برای استراتژی دیگر، به `OrderNumberGeneratorContract` / `InvoiceNumberGeneratorContract` bind کنید.
+
+## وضعیت مالی در برابر گردش کار
+
+- `orders.financial_status` سخت است: `pending → paid|cancelled`، `paid → refunded` (فقط وقتی مرجوعی کامل است). `paid → pending` و `refunded → paid` استثنای `InvalidFinancialTransition` می‌دهند.
+- `orders.workflow_status` آزاد است و قواعد مالی را نمی‌شکند:
+
+```php
+Commerce::orders()->setWorkflowStatus($order->id, 'cooking');
+Commerce::orders()->cancel($order->id); // فقط از pending
 ```
 
 ## بی‌درنگی (idempotency)
 
-`finalize()`/`place()`، `initiate()`/`confirm()` و `finalizeRefund*()` همگی `idempotencyKey(string $key)` اختیاری می‌پذیرند:
+`finalize()`/`finalizeWithPayments()`/`place()`، `initiate()`/`confirm()` و `finalizeRefund*()` همگی `idempotencyKey(string $key)` اختیاری می‌پذیرند. کلید روی ستون یکتای جدول نوشته می‌شود؛ retry شبکه/کاربر نباید سفارش یا پرداخت دوم بسازد.
+
+```php
+// Retry امن ثبت سفارش — هر دو فراخوانی همان CheckoutResult را برمی‌گردانند.
+$first = Commerce::checkout()
+    ->forUser(9001)
+    ->branchId(3)
+    ->idempotencyKey('checkout:user:9001:cart:active')
+    ->finalize();
+
+$retry = Commerce::checkout()
+    ->forUser(9001)
+    ->branchId(3)
+    ->idempotencyKey('checkout:user:9001:cart:active')
+    ->finalize();
+
+$first->order->id === $retry->order->id;     // true
+$first->invoice->id === $retry->invoice->id; // true
+
+// کلید یکسان، کاربر دیگر → IdempotencyConflict
+Commerce::checkout()
+    ->forUser(9002)
+    ->idempotencyKey('checkout:user:9001:cart:active')
+    ->finalize(); // throws
+
+// پرداخت: کلید per-attempt
+Commerce::payments()
+    ->forInvoice($invoice)
+    ->amount((int) $invoice->amount)
+    ->idempotencyKey('pay:invoice:'.$invoice->id.':attempt:1')
+    ->initiate();
+
+// finalizeWithPayments کلید checkout را به پرداخت‌ها هم مشتق می‌کند
+// (checkout-key + ':payment:' + index) تا retry همان payments[] را برگرداند.
+```
 
 - کلید تکراری با همان payload → همان رکورد قبلی برگردانده می‌شود (retry امن). برای `checkout()->finalize()` یعنی همان `CheckoutResult { order, invoice }`.
 - کلید تکراری با payload متفاوت (مثلاً user/order/amount دیگر) → `Karnoweb\Commerce\Exceptions\IdempotencyConflict` پرتاب می‌شود.
@@ -108,6 +192,7 @@ $return = Commerce::returns()
 | `ReturnLineNotFoundInOrder` | `orderLineId` متعلق به سفارش هدف نیست |
 | `ReturnQuantityExceedsAvailable` | تعداد مرجوعی درخواستی + قبلاً مرجوع‌شده از تعداد فروخته‌شدهٔ آن خط بیشتر است |
 | `IdempotencyConflict` | کلید idempotency تکراری با payload متفاوت |
+| `InvalidFinancialTransition` | انتقال ممنوع مالی (مثلاً paid → pending یا refunded → paid) |
 
 همهٔ این‌ها در `Karnoweb\Commerce\Exceptions\*` هستند و از `RuntimeException` ارث می‌برند.
 
@@ -207,18 +292,20 @@ Commerce::invoices()->forOrder($order)->create(invoiceNumber: 'INV-EXTRA-1');
 
 - `addLine(orderLineId, quantity, returnReasonId?, reasonNote?)` صف می‌شود؛ تا `finalizeRefund*()` چیزی persist نمی‌شود. (نام قدیمی `addItem()` هنوز به‌عنوان alias کار می‌کند.) `returnReasonId` یک ارجاع soft به `ReturnReason` است — کدهای پیش‌فرض seed‌شده (`damaged`, `wrong_item`, `not_needed`, `other`) یا هر ردیف دلخواه شما در همان جدول — [getting-started.md](getting-started.md).
 - اعتبارسنجی: `مرجوع‌شده قبلی + تعداد جدید` نمی‌تواند از `quantity` همان `OrderLine` بیشتر شود؛ در غیر این صورت `ReturnQuantityExceedsAvailable` پرتاب می‌شود.
-- `finalizeRefundToWallet(userId, branchId = 0)`: `OrderReturn` + سطرهای `OrderReturnLine` می‌سازد و مبلغ محاسبه‌شده را به کیف پول اعتبار می‌دهد. `branchId` اختیاری است — پیش‌فرض `0` («سراسری»، مطابق قرارداد کیف پول). (نام قدیمی `finalizeAndRefundToWallet()` هنوز alias است.)
-- `finalizeRefund(amountOverride: ?int = null)`: مثل بالا اما بدون اعتبار کیف پول (بازپرداخت واقعی مسئولیت میزبان است). (نام قدیمی `finalizeAndRefund()` هنوز alias است.)
-- هر دو، مثل `refund()->process()`، وقتی مجموع `order_returns.total_amount` سفارش به کل آن برسد، سفارش و پرداخت‌های PAID را به `REFUNDED` می‌برند (هر دو سرویس روی همان ستون می‌نویسند).
+- `finalizeRefundToWallet(userId, branchId = 0)`: `OrderReturn` برمی‌گرداند (BC). `branchId` اختیاری است — پیش‌فرض `0` («سراسری»).
+- `finalizeRefundToWalletResult(...)`: همان کار، اما `ReturnResult { orderReturn, wallet, walletTransaction }` برمی‌گرداند تا جزئیات سند کیف پول در پاسخ API باشد.
+- `finalizeRefund(amountOverride: ?int = null)`: مثل بالا اما بدون اعتبار کیف پول (بازپرداخت واقعی مسئولیت میزبان است).
+- وقتی مجموع `order_returns.total_amount` به کل سفارش برسد **و** `financial_status` برابر `paid` باشد، سفارش (و پرداخت‌های PAID) به `refunded` می‌روند. سفارش unpaid در `pending` می‌ماند — `pending → refunded` مجاز نیست.
 - رویداد `ReturnCreated` (شامل `orderId`, `orderReturnId`, `totalAmount`, `lines: [{orderLineId, quantity, amount}]`) بعد از commit ارسال می‌شود.
 
 ## نتیجهٔ ذخیره‌شده
 
 - `cart()->addLine()`: یک ردیف `order_lines` با `order_id = null`، `item_type`/`item_id`/`item_name` پر شده، بدون هیچ `product_id`.
-- `checkout()->finalize()`: ردیف `orders` (status=pending) + `order_id` روی خطوط سبد + ردیف‌های `document_adjustments` (polymorphic روی order) + (اگر dimension باشد) ردیف‌های `document_dimensions` + ردیف اجباری `invoices` (status=issued).
+- `checkout()->finalize()`: ردیف `orders` (`financial_status=pending`) + `order_id` روی خطوط سبد + ردیف‌های `document_adjustments` + (اگر dimension باشد) `document_dimensions` + ردیف اجباری `invoices` (status=issued, financial_status=issued) + شماره ترتیبی از `document_sequences` مگر override.
+- `checkout()->finalizeWithPayments([...])`: همان + ۱..n ردیف `payments` (status=pending، `extra_attributes` از کلید `extra`).
 - `invoices()->issueStandalone()`: ردیف `invoices` با `order_id = null` (+ اختیاری `document_adjustments`/`document_dimensions` گزارشی).
-- `payments()->initiate()`: ردیف `payments` (status=pending, `invoice_id` الزامی).
-- `payments()->confirm()`: `payments.status=paid`، `orders.status=paid` (اگر order-bound)، `invoices.status=paid`، ردیف جدید `transactions` (کلیدشده با `payment_id`).
+- `payments()->initiate()`: ردیف `payments` (status=pending, `invoice_id` الزامی، `order_id` از فاکتور اگر `forOrder()` نباشد).
+- `payments()->confirm()`: `payments.status=paid`، `orders.financial_status=paid` (اگر order-bound)، `invoices.status`/`financial_status=paid`، ردیف جدید `transactions`.
 - `refund()->process()`: ردیف `order_returns` (بدون خط) + (اگر `toWallet()`) ردیف `wallet_transactions`.
 - `returns()->finalizeRefund*()`: یک ردیف `order_returns` + یک ردیف `order_return_lines` به ازای هر `addLine()` (با `return_reason_id`/`reason_note`)، هرکدام با `unit_price_amount`/`amount` منجمد در لحظه مرجوعی.
 

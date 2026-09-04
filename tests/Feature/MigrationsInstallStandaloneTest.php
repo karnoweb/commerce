@@ -36,6 +36,7 @@ final class MigrationsInstallStandaloneTest extends TestCase
         'wallet_transactions',
         'discounts',
         'discount_user_group',
+        'document_sequences',
     ];
 
     public function test_only_one_squashed_migration_file_is_shipped(): void
@@ -114,6 +115,21 @@ final class MigrationsInstallStandaloneTest extends TestCase
                 "invoices must not have a fixed [{$column}] column — document_adjustments is the single source of truth."
             );
         }
+    }
+
+    public function test_orders_use_financial_and_workflow_status_instead_of_a_single_status(): void
+    {
+        $this->artisan('migrate', ['--force' => true])->assertExitCode(0);
+
+        $orders = CommerceTables::name('orders');
+        $invoices = CommerceTables::name('invoices');
+
+        $this->assertTrue(Schema::hasColumn($orders, 'financial_status'));
+        $this->assertTrue(Schema::hasColumn($orders, 'workflow_status'));
+        $this->assertFalse(Schema::hasColumn($orders, 'status'), 'orders.status was replaced by financial_status + workflow_status.');
+        $this->assertTrue(Schema::hasColumn($invoices, 'status'));
+        $this->assertTrue(Schema::hasColumn($invoices, 'financial_status'));
+        $this->assertTrue(Schema::hasTable(CommerceTables::name('document_sequences')));
     }
 
     public function test_migrate_rollback_cleanly_reverses_every_migration(): void

@@ -19,6 +19,7 @@ Commerce::payments();  // PaymentBuilder (alias: payment())
 Commerce::refund();    // RefundBuilder (legacy — ترجیحاً returns())
 Commerce::returns();   // ReturnBuilder (مرجوعی مقداری)
 Commerce::wallet();    // WalletBuilder
+Commerce::orders();    // OrderBuilder (workflow_status / cancel)
 ```
 
 | موضوع | سند |

@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Karnoweb\Commerce\Services;
 
 use Illuminate\Support\Facades\DB;
-use Karnoweb\Commerce\Enums\OrderStatusEnum;
+use Karnoweb\Commerce\Enums\FinancialStatusEnum;
 use Karnoweb\Commerce\Enums\PaymentStatusEnum;
 use Karnoweb\Commerce\Events\RefundCreated;
 use Karnoweb\Commerce\Exceptions\IdempotencyConflict;
@@ -27,7 +27,10 @@ class RefundService
 {
     use ResolvesConfiguredModels;
 
-    public function __construct(private readonly WalletService $walletService) {}
+    public function __construct(
+        private readonly WalletService $walletService,
+        private readonly OrderService $orderService,
+    ) {}
 
     /**
      * @param  array{user_id: int|string, branch_id: int|string}|null  $toWallet
@@ -84,14 +87,18 @@ class RefundService
             }
 
             if ($alreadyRefunded + $amountInt >= (int) $order->total_amount) {
-                $order->update(['status' => OrderStatusEnum::REFUNDED]);
+                $order->refresh();
 
-                $paymentClass = static::model('payment');
+                if ($order->financial_status === FinancialStatusEnum::PAID) {
+                    $this->orderService->transitionTo($order, FinancialStatusEnum::REFUNDED);
 
-                $paymentClass::query()
-                    ->where('order_id', $order->id)
-                    ->where('status', PaymentStatusEnum::PAID)
-                    ->update(['status' => PaymentStatusEnum::REFUNDED]);
+                    $paymentClass = static::model('payment');
+
+                    $paymentClass::query()
+                        ->where('order_id', $order->id)
+                        ->where('status', PaymentStatusEnum::PAID)
+                        ->update(['status' => PaymentStatusEnum::REFUNDED]);
+                }
             }
 
             CommerceEventDispatcher::dispatch(new RefundCreated(

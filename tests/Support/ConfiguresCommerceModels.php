@@ -7,6 +7,7 @@ namespace Karnoweb\Commerce\Tests\Support;
 use Karnoweb\Commerce\Models\Discount;
 use Karnoweb\Commerce\Models\DocumentAdjustment;
 use Karnoweb\Commerce\Models\DocumentDimension;
+use Karnoweb\Commerce\Models\DocumentSequence;
 use Karnoweb\Commerce\Models\Invoice;
 use Karnoweb\Commerce\Models\Order;
 use Karnoweb\Commerce\Models\OrderLine;
@@ -46,6 +47,7 @@ trait ConfiguresCommerceModels
             'commerce.models.wallet_transaction' => WalletTransaction::class,
             'commerce.models.shipping_method' => ShippingMethod::class,
             'commerce.models.payment_method' => PaymentMethod::class,
+            'commerce.models.document_sequence' => DocumentSequence::class,
         ]);
     }
 }

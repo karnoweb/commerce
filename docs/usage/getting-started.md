@@ -66,7 +66,7 @@ Commerce::newModel('invoice');
 Commerce::macro('pendingOrders', function (int $userId) {
     return Commerce::model('order')::query()
         ->where('user_id', $userId)
-        ->where('status', 'pending')
+        ->where('financial_status', 'pending')
         ->get();
 });
 ```

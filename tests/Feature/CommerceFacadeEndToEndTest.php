@@ -6,7 +6,7 @@ namespace Karnoweb\Commerce\Tests\Feature;
 
 use Illuminate\Support\Facades\Event;
 use Karnoweb\Commerce\DTOs\CheckoutResult;
-use Karnoweb\Commerce\Enums\OrderStatusEnum;
+use Karnoweb\Commerce\Enums\FinancialStatusEnum;
 use Karnoweb\Commerce\Enums\PaymentStatusEnum;
 use Karnoweb\Commerce\Enums\PaymentTypeEnum;
 use Karnoweb\Commerce\Events\InvoiceFullyPaid;
@@ -86,7 +86,7 @@ final class CommerceFacadeEndToEndTest extends TestCase
 
         $this->assertInstanceOf(Order::class, $order);
         $this->assertInstanceOf(Invoice::class, $invoice);
-        $this->assertSame(OrderStatusEnum::PENDING, $order->status);
+        $this->assertSame(FinancialStatusEnum::PENDING, $order->financial_status);
         $this->assertSame($branchId, $order->branch_id);
         $this->assertSame(2_050_000, (int) $order->total_amount); // 2 * 1,000,000 + 50,000 shipping
         $this->assertSame((int) $order->total_amount, (int) $invoice->amount, 'The mandatory invoice must mirror the order total.');
@@ -131,7 +131,7 @@ final class CommerceFacadeEndToEndTest extends TestCase
         $order->refresh();
         $invoice->refresh();
 
-        $this->assertSame(OrderStatusEnum::PAID, $order->status);
+        $this->assertSame(FinancialStatusEnum::PAID, $order->financial_status);
         $this->assertSame('paid', $invoice->status);
         $this->assertSame(1, Transaction::query()->where('payment_id', $payment->id)->where('tracking_code', 'TRK-777')->count());
 
@@ -159,7 +159,7 @@ final class CommerceFacadeEndToEndTest extends TestCase
         $this->assertSame(1_000_000, (int) $orderReturn->total_amount);
 
         $order->refresh();
-        $this->assertSame(OrderStatusEnum::PAID, $order->status, 'Partial refund must not flip the order to REFUNDED.');
+        $this->assertSame(FinancialStatusEnum::PAID, $order->financial_status, 'Partial refund must not flip the order to REFUNDED.');
 
         $walletTransaction = WalletTransaction::query()
             ->where('transactionable_type', $orderReturn->getMorphClass())

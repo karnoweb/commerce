@@ -36,6 +36,7 @@ class Invoice extends BaseModel
         'amount',
         'invoice_date',
         'status',
+        'financial_status',
         'extra_attributes',
     ];
 

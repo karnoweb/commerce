@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Karnoweb\Commerce\Services;
 
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Str;
+use Karnoweb\Commerce\Contracts\InvoiceNumberGeneratorContract;
 use Karnoweb\Commerce\Events\InvoiceIssued;
 use Karnoweb\Commerce\Models\Invoice;
 use Karnoweb\Commerce\Models\Order;
@@ -24,13 +24,17 @@ class InvoiceService
 {
     use ResolvesConfiguredModels;
 
+    public function __construct(
+        private readonly InvoiceNumberGeneratorContract $invoiceNumberGenerator,
+    ) {}
+
     public function createForOrder(Order $order, ?string $invoiceNumber = null, ?string $idempotencyKey = null): Invoice
     {
         $class = static::model('invoice');
 
         /** @var Invoice $invoice */
         $invoice = $class::create([
-            'invoice_number' => $invoiceNumber ?? $this->generateInvoiceNumber(),
+            'invoice_number' => $invoiceNumber ?? $this->invoiceNumberGenerator->generate($order->branch_id),
             'idempotency_key' => $idempotencyKey,
             'order_id' => $order->id,
             'user_id' => $order->user_id,
@@ -40,6 +44,7 @@ class InvoiceService
             'amount' => $order->total_amount,
             'invoice_date' => now()->toDateString(),
             'status' => 'issued',
+            'financial_status' => 'issued',
         ]);
 
         CommerceEventDispatcher::dispatch(new InvoiceIssued(
@@ -87,19 +92,21 @@ class InvoiceService
             }
 
             $class = static::model('invoice');
+            $branchId = $data['branch_id'] ?? null;
 
             /** @var Invoice $invoice */
             $invoice = $class::create([
-                'invoice_number' => $data['invoice_number'] ?? $this->generateInvoiceNumber(),
+                'invoice_number' => $data['invoice_number'] ?? $this->invoiceNumberGenerator->generate($branchId),
                 'idempotency_key' => $idempotencyKey,
                 'order_id' => null,
                 'user_id' => $data['user_id'] ?? null,
-                'branch_id' => $data['branch_id'] ?? null,
+                'branch_id' => $branchId,
                 'sales_unit_id' => $data['sales_unit_id'] ?? null,
                 'warehouse_id' => $data['warehouse_id'] ?? null,
                 'amount' => (int) round($data['amount']),
                 'invoice_date' => now()->toDateString(),
                 'status' => 'issued',
+                'financial_status' => 'issued',
                 'extra_attributes' => $data['extra_attributes'] ?? null,
             ]);
 
@@ -132,10 +139,5 @@ class InvoiceService
         $class = static::model('invoice');
 
         return $class::query()->where('idempotency_key', $key)->first();
-    }
-
-    private function generateInvoiceNumber(): string
-    {
-        return 'INV-'.now()->format('Ymd').'-'.Str::upper(Str::random(8));
     }
 }

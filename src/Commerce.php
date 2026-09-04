@@ -8,6 +8,7 @@ use Illuminate\Support\Traits\Macroable;
 use Karnoweb\Commerce\Builders\CartBuilder;
 use Karnoweb\Commerce\Builders\CheckoutBuilder;
 use Karnoweb\Commerce\Builders\InvoiceBuilder;
+use Karnoweb\Commerce\Builders\OrderBuilder;
 use Karnoweb\Commerce\Builders\PaymentBuilder;
 use Karnoweb\Commerce\Builders\RefundBuilder;
 use Karnoweb\Commerce\Builders\ReturnBuilder;
@@ -15,6 +16,7 @@ use Karnoweb\Commerce\Builders\WalletBuilder;
 use Karnoweb\Commerce\Services\CartService;
 use Karnoweb\Commerce\Services\CheckoutService;
 use Karnoweb\Commerce\Services\InvoiceService;
+use Karnoweb\Commerce\Services\OrderService;
 use Karnoweb\Commerce\Services\PaymentService;
 use Karnoweb\Commerce\Services\RefundService;
 use Karnoweb\Commerce\Services\ReturnService;
@@ -34,6 +36,7 @@ class Commerce
         protected RefundService $refundService,
         protected WalletService $walletService,
         protected ReturnService $returnService,
+        protected OrderService $orderService,
     ) {}
 
     public function config(?string $key = null, mixed $default = null): mixed
@@ -111,5 +114,13 @@ class Commerce
     public function returns(): ReturnBuilder
     {
         return new ReturnBuilder($this->returnService);
+    }
+
+    /**
+     * Fresh order builder each call — workflow_status and cancel().
+     */
+    public function orders(): OrderBuilder
+    {
+        return new OrderBuilder($this->orderService);
     }
 }

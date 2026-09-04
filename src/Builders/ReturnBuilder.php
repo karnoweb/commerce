@@ -6,6 +6,7 @@ namespace Karnoweb\Commerce\Builders;
 
 use InvalidArgumentException;
 use Karnoweb\Commerce\DTOs\ReturnLineInput;
+use Karnoweb\Commerce\DTOs\ReturnResult;
 use Karnoweb\Commerce\Models\Order;
 use Karnoweb\Commerce\Models\OrderReturn;
 use Karnoweb\Commerce\Services\ReturnService;
@@ -88,6 +89,22 @@ class ReturnBuilder
             $this->lines,
             $this->idempotencyKey,
             ['user_id' => $userId, 'branch_id' => $branchId],
+        );
+    }
+
+    /**
+     * Same as finalizeRefundToWallet() but returns ReturnResult with the
+     * wallet and wallet transaction that settled the refund.
+     */
+    public function finalizeRefundToWalletResult(int|string $userId, int|string $branchId = 0): ReturnResult
+    {
+        $this->assertReady();
+
+        return $this->returnService->processToWallet(
+            $this->order,
+            $this->lines,
+            ['user_id' => $userId, 'branch_id' => $branchId],
+            $this->idempotencyKey,
         );
     }
 

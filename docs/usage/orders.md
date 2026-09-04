@@ -3,7 +3,7 @@
 > برای جریان کانونیک با idempotency و انتقال وضعیت خودکار، از `Commerce::cart()`/`Commerce::checkout()` استفاده کنید — [quickstart.md](quickstart.md). این سند همان کار را روی مدل‌ها به‌صورت خام نشان می‌دهد؛ فقط برای درک ساختار جدول‌ها یا کوئری‌های سفارشی مفید است.
 
 ```php
-use Karnoweb\Commerce\Enums\OrderStatusEnum;
+use Karnoweb\Commerce\Enums\FinancialStatusEnum;
 use Karnoweb\Commerce\Enums\OrderTypeEnum;
 use Karnoweb\Commerce\Facades\Commerce;
 
@@ -31,7 +31,7 @@ $cart = $OrderLine::query()->carts()->where('user_id', $userId)->get();
 $order = $Order::query()->create([
     'order_number' => 'ORD-1001',
     'user_id' => $userId,
-    'status' => OrderStatusEnum::PENDING,
+    'financial_status' => FinancialStatusEnum::PENDING,
     'type' => OrderTypeEnum::SALE,
     'subtotal_amount' => 1_000_000,
     'total_amount' => 1_050_000,
@@ -55,7 +55,7 @@ $order->shippingAmount(); // 50000 — accessor محاسبه‌شده، نه س�
 - ساخت سفارش «کامل» (قیمت‌گذاری، تخفیف، موجودی) را در Action میزبان نگه دارید؛ مدل فقط persistence است.
 - هیچ `product_id` ستونی در `order_lines` نیست — ارجاع همیشه `item_type`+`item_id` (soft) با اسنپ‌شات `item_name` است.
 - هیچ `discount_amount`/`tax_amount`/`shipping_amount` ستونی روی `orders`/`invoices` نیست — `document_adjustments` منبع واحد حقیقت است ([architecture.md](../concepts/architecture.md)).
-- وضعیت را با معنای enum جلو ببرید؛ چرخهٔ مجاز (مثلاً pending→paid) قانون میزبان است.
+- `financial_status` را سرویس‌های پکیج جلو می‌برند (confirm / return / cancel)؛ چرخهٔ مجاز سخت است. `workflow_status` برچسب آزاد میزبان است (`Commerce::orders()->setWorkflowStatus()`).
 
 ## خطاها
 

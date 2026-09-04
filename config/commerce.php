@@ -47,6 +47,7 @@ return [
         'discount_user_group' => 'discount_user_group',
         'payment_methods' => 'payment_methods',
         'shipping_methods' => 'shipping_methods',
+        'document_sequences' => 'document_sequences',
     ],
 
     /*
@@ -71,6 +72,7 @@ return [
         'wallet_transaction' => env('COMMERCE_WALLET_TRANSACTION_MODEL', 'App\\Models\\WalletTransaction'),
         'shipping_method' => env('COMMERCE_SHIPPING_METHOD_MODEL', 'App\\Models\\ShippingMethod'),
         'payment_method' => env('COMMERCE_PAYMENT_METHOD_MODEL', 'App\\Models\\PaymentMethod'),
+        'document_sequence' => env('COMMERCE_DOCUMENT_SEQUENCE_MODEL', 'App\\Models\\DocumentSequence'),
     ],
 
     /*
@@ -95,5 +97,30 @@ return [
         'commerce_payment' => env('COMMERCE_PAYMENT_MODEL', 'App\\Models\\Payment'),
         'commerce_order_return' => env('COMMERCE_ORDER_RETURN_MODEL', 'App\\Models\\OrderReturn'),
         'commerce_wallet' => env('COMMERCE_WALLET_MODEL', 'App\\Models\\Wallet'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Document numbers
+    |--------------------------------------------------------------------------
+    |
+    | Sequential generators (OrderNumberGeneratorContract /
+    | InvoiceNumberGeneratorContract) format values from these templates.
+    | Tokens: {year}, {branch} (omitted when null), {sequence}.
+    | Bind a different implementation to the contract to swap the strategy.
+    | Builder ->orderNumber() / ->invoiceNumber() always override these.
+    |
+    */
+    'numbers' => [
+        'order' => [
+            'format' => env('COMMERCE_ORDER_NUMBER_FORMAT', 'ORD-{year}-{branch}-{sequence}'),
+            'padding' => (int) env('COMMERCE_ORDER_NUMBER_PADDING', 6),
+            'generator' => env('COMMERCE_ORDER_NUMBER_GENERATOR', 'Karnoweb\\Commerce\\Support\\SequentialOrderNumberGenerator'),
+        ],
+        'invoice' => [
+            'format' => env('COMMERCE_INVOICE_NUMBER_FORMAT', 'INV-{year}-{branch}-{sequence}'),
+            'padding' => (int) env('COMMERCE_INVOICE_NUMBER_PADDING', 6),
+            'generator' => env('COMMERCE_INVOICE_NUMBER_GENERATOR', 'Karnoweb\\Commerce\\Support\\SequentialInvoiceNumberGenerator'),
+        ],
     ],
 ];

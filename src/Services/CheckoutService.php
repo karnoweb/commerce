@@ -5,10 +5,13 @@ declare(strict_types=1);
 namespace Karnoweb\Commerce\Services;
 
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Str;
+use Karnoweb\Commerce\Contracts\CommerceContextResolverContract;
+use Karnoweb\Commerce\Contracts\OrderNumberGeneratorContract;
 use Karnoweb\Commerce\DTOs\CheckoutResult;
-use Karnoweb\Commerce\Enums\OrderStatusEnum;
+use Karnoweb\Commerce\DTOs\CheckoutResultWithPayments;
+use Karnoweb\Commerce\Enums\FinancialStatusEnum;
 use Karnoweb\Commerce\Enums\OrderTypeEnum;
+use Karnoweb\Commerce\Enums\PaymentTypeEnum;
 use Karnoweb\Commerce\Events\OrderCreated;
 use Karnoweb\Commerce\Exceptions\CannotCheckoutEmptyCart;
 use Karnoweb\Commerce\Exceptions\IdempotencyConflict;
@@ -22,6 +25,8 @@ use Karnoweb\Commerce\Support\ResolvesConfiguredModels;
  * no HTTP access, no shop/host model dependency. Every order line is a
  * generic item_type/item_id/item_name reference — there is no product_id.
  *
+ * Cart source: OrderLine rows with order_id NULL for the given user.
+ *
  * finalize() always:
  *  - moves the user's cart lines (OrderLine, order_id null) onto the order,
  *  - records shipping/tax/discount + any custom key as document_adjustments
@@ -30,6 +35,9 @@ use Karnoweb\Commerce\Support\ResolvesConfiguredModels;
  *    document_dimensions rows for generic reporting, in addition to the
  *    orders.sales_unit_id/warehouse_id shortcut columns,
  *  - creates the order's mandatory Invoice (never leaves an order unbilled).
+ *
+ * finalizeWithPayments() does the same, then writes 1..n PENDING payment
+ * records (no gateway call). Confirmation stays a separate step.
  */
 class CheckoutService
 {
@@ -38,6 +46,9 @@ class CheckoutService
     public function __construct(
         private readonly CartService $cartService,
         private readonly InvoiceService $invoiceService,
+        private readonly OrderNumberGeneratorContract $orderNumberGenerator,
+        private readonly PaymentService $paymentService,
+        private readonly CommerceContextResolverContract $contextResolver,
     ) {}
 
     /**
@@ -63,12 +74,13 @@ class CheckoutService
         return DB::transaction(function () use ($data): CheckoutResult {
             $userId = $data['user_id'];
             $idempotencyKey = $data['idempotency_key'] ?? null;
+            $branchId = $data['branch_id'] ?? $this->contextResolver->branchId();
 
             if ($idempotencyKey !== null) {
                 $existing = $this->findOrderByIdempotencyKey($idempotencyKey);
 
                 if ($existing !== null) {
-                    $this->assertSameCheckoutPayload($existing, $data, $idempotencyKey);
+                    $this->assertSameCheckoutPayload($existing, $data, $branchId, $idempotencyKey);
 
                     return new CheckoutResult($existing, $this->latestInvoiceFor($existing));
                 }
@@ -104,16 +116,18 @@ class CheckoutService
 
             $orderClass = static::model('order');
 
+            $orderNumber = $data['order_number'] ?? $this->orderNumberGenerator->generate($branchId);
+
             /** @var Order $order */
             $order = $orderClass::create([
                 'idempotency_key' => $idempotencyKey,
-                'order_number' => $data['order_number'] ?? $this->generateOrderNumber(),
+                'order_number' => $orderNumber,
                 'user_id' => $userId,
-                'branch_id' => $data['branch_id'] ?? null,
+                'branch_id' => $branchId,
                 'sales_unit_id' => $data['sales_unit_id'] ?? null,
                 'warehouse_id' => $data['warehouse_id'] ?? null,
                 'type' => OrderTypeEnum::SALE,
-                'status' => OrderStatusEnum::PENDING,
+                'financial_status' => FinancialStatusEnum::PENDING,
                 'subtotal_amount' => $subtotalAmount,
                 'total_amount' => $totalAmount,
                 'currency' => $data['currency'] ?? null,
@@ -140,6 +154,52 @@ class CheckoutService
             ));
 
             return new CheckoutResult($order, $invoice);
+        });
+    }
+
+    /**
+     * Same as finalize(), then create 1..n PENDING payment records against
+     * the new invoice. No gateway is called — confirm() remains a separate
+     * step. Retry-safe when the checkout idempotency key is set: derived
+     * per-index payment keys reuse the same payment rows.
+     *
+     * @param  array{
+     *     user_id: int|string,
+     *     branch_id?: int|string|null,
+     *     sales_unit_id?: int|string|null,
+     *     warehouse_id?: int|string|null,
+     *     order_number?: string|null,
+     *     idempotency_key?: string|null,
+     *     currency?: string|null,
+     *     note?: string|null,
+     *     invoice_number?: string|null,
+     *     adjustments?: list<array{key: string, sign?: int, amount: int|float, payload?: array|null}>,
+     *     dimensions?: array<string, mixed>,
+     * } $data
+     * @param  list<array{method_id?: int|string|null, type?: PaymentTypeEnum|string, amount: int|float, extra?: array<string, mixed>, idempotency_key?: string|null}>  $payments
+     */
+    public function finalizeWithPayments(array $data, array $payments): CheckoutResultWithPayments
+    {
+        return DB::transaction(function () use ($data, $payments): CheckoutResultWithPayments {
+            $result = $this->finalize($data);
+            $created = [];
+            $checkoutKey = $data['idempotency_key'] ?? null;
+
+            foreach ($payments as $index => $payment) {
+                $paymentKey = $payment['idempotency_key'] ?? ($checkoutKey !== null ? $checkoutKey.':payment:'.$index : null);
+
+                $created[] = $this->paymentService->initiate(
+                    $result->invoice,
+                    $result->order,
+                    $payment['method_id'] ?? null,
+                    $payment['type'] ?? PaymentTypeEnum::CASH,
+                    $payment['amount'],
+                    $paymentKey,
+                    $payment['extra'] ?? [],
+                );
+            }
+
+            return new CheckoutResultWithPayments($result->order, $result->invoice, $created);
         });
     }
 
@@ -176,18 +236,13 @@ class CheckoutService
     /**
      * @param  array<string, mixed>  $data
      */
-    private function assertSameCheckoutPayload(Order $existing, array $data, string $idempotencyKey): void
+    private function assertSameCheckoutPayload(Order $existing, array $data, int|string|null $branchId, string $idempotencyKey): void
     {
         $sameUser = (string) $existing->user_id === (string) $data['user_id'];
-        $sameBranch = (string) ($existing->branch_id ?? '') === (string) ($data['branch_id'] ?? '');
+        $sameBranch = (string) ($existing->branch_id ?? '') === (string) ($branchId ?? '');
 
         if (! $sameUser || ! $sameBranch) {
             throw new IdempotencyConflict($idempotencyKey);
         }
-    }
-
-    private function generateOrderNumber(): string
-    {
-        return 'ORD-'.now()->format('Ymd').'-'.Str::upper(Str::random(8));
     }
 }
