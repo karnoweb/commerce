@@ -18,6 +18,7 @@ class OrderReturn extends BaseModel
         'tax_amount',
         'discount_amount',
         'reason',
+        'idempotency_key',
         'document_id',
     ];
 

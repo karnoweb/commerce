@@ -1,5 +1,7 @@
 # سفارش و سبد
 
+> برای جریان کانونیک با idempotency و انتقال وضعیت خودکار، از `Commerce::cart()`/`Commerce::checkout()` استفاده کنید — [quickstart.md](quickstart.md). این سند همان مسیر مدل‌محور قبلی را توضیح می‌دهد (هنوز معتبر، additive).
+
 ```php
 use Karnoweb\Commerce\Enums\OrderStatusEnum;
 use Karnoweb\Commerce\Enums\OrderTypeEnum;

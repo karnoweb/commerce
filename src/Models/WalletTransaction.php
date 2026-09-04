@@ -18,6 +18,7 @@ class WalletTransaction extends BaseModel
         'type',
         'description',
         'reference',
+        'idempotency_key',
         'published',
         'transactionable_id',
         'transactionable_type',

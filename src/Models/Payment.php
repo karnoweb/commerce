@@ -15,6 +15,7 @@ class Payment extends BaseModel
         'branch_id',
         'order_id',
         'invoice_id',
+        'idempotency_key',
         'payment_method_id',
         'amount',
         'scheduled_date',

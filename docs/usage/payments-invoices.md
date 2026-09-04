@@ -1,5 +1,7 @@
 # فاکتور و پرداخت
 
+> برای جریان کانونیک (initiate → confirm، Transaction، انتقال وضعیت Order/Invoice) از `Commerce::payment()` استفاده کنید — [quickstart.md](quickstart.md). این سند همان مسیر مدل‌محور قبلی را توضیح می‌دهد (هنوز معتبر، additive).
+
 ```php
 use Karnoweb\Commerce\Enums\PaymentStatusEnum;
 use Karnoweb\Commerce\Enums\PaymentTypeEnum;

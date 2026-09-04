@@ -16,6 +16,7 @@ class Order extends BaseModel
 
     protected $fillable = [
         'order_number',
+        'idempotency_key',
         'user_id',
         'branch_id',
         'deal_id',

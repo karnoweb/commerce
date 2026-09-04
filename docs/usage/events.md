@@ -4,6 +4,7 @@
 use Karnoweb\Commerce\Events\OrderCreated;
 use Karnoweb\Commerce\Events\OrderPaid;
 use Karnoweb\Commerce\Events\InvoiceFullyPaid;
+use Karnoweb\Commerce\Events\RefundCreated;
 use Karnoweb\Commerce\Support\CommerceEventDispatcher;
 
 CommerceEventDispatcher::dispatch(new OrderCreated(
@@ -20,9 +21,26 @@ CommerceEventDispatcher::dispatch(new InvoiceFullyPaid(
     invoiceId: (int) $invoice->id,
     orderId: $invoice->order_id,
 ));
+
+CommerceEventDispatcher::dispatch(new RefundCreated(
+    orderId: (int) $order->id,
+    orderReturnId: (int) $orderReturn->id,
+    amount: $orderReturn->amount,
+    userId: $order->user_id,
+));
 ```
 
 اگر داخل تراکنش DB باشید، ارسال به بعد از commit موکول می‌شود.
+
+## منتشرکننده‌های Facade
+
+اگر از `Commerce::checkout()`, `Commerce::payment()` یا `Commerce::refund()` استفاده کنید ([quickstart.md](quickstart.md))، این رویدادها را خودِ سرویس‌های پکیج بعد از commit ارسال می‌کنند — نیازی به dispatch دستی نیست:
+
+| متد Facade | رویداد |
+|------------|--------|
+| `checkout()->place()` | `OrderCreated` |
+| `payment()->confirm()` | `OrderPaid` + `InvoiceFullyPaid` |
+| `refund()->process()` | `RefundCreated` |
 
 ## الگوی دوگانه در میزبان
 

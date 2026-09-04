@@ -5,6 +5,11 @@ declare(strict_types=1);
 namespace Karnoweb\Commerce;
 
 use Illuminate\Support\ServiceProvider;
+use Karnoweb\Commerce\Services\CartService;
+use Karnoweb\Commerce\Services\CheckoutService;
+use Karnoweb\Commerce\Services\PaymentService;
+use Karnoweb\Commerce\Services\RefundService;
+use Karnoweb\Commerce\Services\WalletService;
 use Karnoweb\Commerce\Support\CommerceMorphMap;
 
 class CommerceServiceProvider extends ServiceProvider
@@ -13,7 +18,27 @@ class CommerceServiceProvider extends ServiceProvider
     {
         $this->mergeConfigFrom(__DIR__.'/../config/commerce.php', 'commerce');
 
-        $this->app->singleton('commerce', fn () => new Commerce);
+        $this->app->singleton(CartService::class);
+        $this->app->singleton(WalletService::class);
+        $this->app->singleton(PaymentService::class);
+
+        $this->app->singleton(CheckoutService::class, function ($app) {
+            return new CheckoutService($app->make(CartService::class));
+        });
+
+        $this->app->singleton(RefundService::class, function ($app) {
+            return new RefundService($app->make(WalletService::class));
+        });
+
+        $this->app->singleton('commerce', function ($app) {
+            return new Commerce(
+                $app->make(CartService::class),
+                $app->make(CheckoutService::class),
+                $app->make(PaymentService::class),
+                $app->make(RefundService::class),
+                $app->make(WalletService::class),
+            );
+        });
         $this->app->singleton(Commerce::class, fn ($app) => $app->make('commerce'));
     }
 
