@@ -2,7 +2,7 @@
 
 ## Wallet
 
-کیف پول با morph `reference` به مالک (معمولاً User) و `branch_id` اختیاری. تراکنش‌ها در `WalletTransaction` با `amount`، `sign` (بستانکار/بدهکار)، `type` و morph `transactionable`.
+کیف پول با morph `reference` به مالک (معمولاً User) و `branch_id`. **`branch_id` همیشه `NOT NULL` است** — قرارداد این پکیج: `0` یعنی «سراسری» (کیف پول بدون شعبهٔ خاص)، هرگز `null`. این کار ایندکس یکتای `(reference_type, reference_id, branch_id)` را روی همهٔ دیتابیس‌ها یکسان نگه می‌دارد (بعضی درایورها مثل MySQL چند `NULL` را در ایندکس یکتا متمایز می‌دانند، بعضی دیگر نه). تراکنش‌ها در `WalletTransaction` با `amount`، `sign` (بستانکار/بدهکار)، `type` و morph `transactionable`.
 
 منطق موجودی و قفل همزمانی را در Action/سرویس میزبان پیاده کنید؛ مدل‌ها persistence هستند.
 

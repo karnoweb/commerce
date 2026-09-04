@@ -8,8 +8,8 @@ use RuntimeException;
 use Throwable;
 
 /**
- * Thrown by CheckoutService::placeFromCart() when the user has no cart
- * items (OrderItem rows with a null order_id) to check out.
+ * Thrown by CheckoutService::finalize() when the user has no cart lines
+ * (OrderLine rows with a null order_id) to check out.
  */
 class CannotCheckoutEmptyCart extends RuntimeException
 {

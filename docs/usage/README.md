@@ -12,11 +12,13 @@ use Karnoweb\Commerce\Facades\Commerce;
 Commerce::model('order');
 
 // Facade‌محور (جدید)
-Commerce::cart();     // CartBuilder
+Commerce::cart();      // CartBuilder
 Commerce::checkout();  // CheckoutBuilder
-Commerce::payment();  // PaymentBuilder
-Commerce::refund();   // RefundBuilder
-Commerce::wallet();   // WalletBuilder
+Commerce::invoices();  // InvoiceBuilder (standalone یا فاکتور اضافه)
+Commerce::payments();  // PaymentBuilder (alias: payment())
+Commerce::refund();    // RefundBuilder (legacy — ترجیحاً returns())
+Commerce::returns();   // ReturnBuilder (مرجوعی مقداری)
+Commerce::wallet();    // WalletBuilder
 ```
 
 | موضوع | سند |

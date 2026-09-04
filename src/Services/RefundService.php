@@ -16,10 +16,12 @@ use Karnoweb\Commerce\Support\CommerceEventDispatcher;
 use Karnoweb\Commerce\Support\ResolvesConfiguredModels;
 
 /**
- * Canonical refund flow: always creates an OrderReturn; optionally credits
- * a wallet. Once the sum of an order's returns reaches its total, the order
- * (and any PAID payments) transition to REFUNDED. Partial refunds leave the
- * order PAID — callers rely on the returns sum, not a new enum value.
+ * Legacy amount-only refund flow: always creates an OrderReturn (with no
+ * OrderReturnLine rows — a header-only ledger entry); optionally credits a
+ * wallet. Once the sum of an order's returns reaches its total, the order
+ * (and any PAID payments) transition to REFUNDED. Prefer
+ * Commerce::returns() when the caller knows *which* lines and *how many*
+ * units are coming back.
  */
 class RefundService
 {
@@ -51,11 +53,12 @@ class RefundService
                 }
             }
 
+            $amountInt = (int) round($amount);
             $alreadyRefunded = $this->refundedAmount($order);
-            $available = (float) $order->total - $alreadyRefunded;
+            $available = (int) $order->total_amount - $alreadyRefunded;
 
-            if ((float) $amount > $available) {
-                throw new RefundAmountExceedsPaidAmount($order->id, (float) $amount, $available);
+            if ($amountInt > $available) {
+                throw new RefundAmountExceedsPaidAmount($order->id, (float) $amountInt, (float) $available);
             }
 
             $orderReturnClass = static::model('order_return');
@@ -63,8 +66,7 @@ class RefundService
             /** @var OrderReturn $orderReturn */
             $orderReturn = $orderReturnClass::create([
                 'order_id' => $order->id,
-                'user_id' => $order->user_id,
-                'amount' => $amount,
+                'total_amount' => $amountInt,
                 'reason' => $reason,
                 'idempotency_key' => $idempotencyKey,
             ]);
@@ -73,7 +75,7 @@ class RefundService
                 $this->walletService->credit(
                     ownerId: $toWallet['user_id'],
                     branchId: $toWallet['branch_id'],
-                    amount: $amount,
+                    amount: $amountInt,
                     description: $reason,
                     transactionable: $orderReturn,
                     idempotencyKey: $idempotencyKey,
@@ -81,7 +83,7 @@ class RefundService
                 );
             }
 
-            if ($alreadyRefunded + (float) $amount >= (float) $order->total) {
+            if ($alreadyRefunded + $amountInt >= (int) $order->total_amount) {
                 $order->update(['status' => OrderStatusEnum::REFUNDED]);
 
                 $paymentClass = static::model('payment');
@@ -95,7 +97,7 @@ class RefundService
             CommerceEventDispatcher::dispatch(new RefundCreated(
                 orderId: $order->id,
                 orderReturnId: $orderReturn->id,
-                amount: $amount,
+                amount: $amountInt,
                 userId: $order->user_id,
             ));
 
@@ -103,11 +105,11 @@ class RefundService
         });
     }
 
-    private function refundedAmount(Order $order): float
+    private function refundedAmount(Order $order): int
     {
         $orderReturnClass = static::model('order_return');
 
-        return (float) $orderReturnClass::query()->where('order_id', $order->id)->sum('amount');
+        return (int) $orderReturnClass::query()->where('order_id', $order->id)->sum('total_amount');
     }
 
     private function findByIdempotencyKey(string $key): ?OrderReturn
@@ -120,7 +122,7 @@ class RefundService
     private function assertSameRefundPayload(OrderReturn $existing, Order $order, int|float $amount, string $idempotencyKey): void
     {
         $sameOrder = (string) $existing->order_id === (string) $order->id;
-        $sameAmount = (float) $existing->amount === (float) $amount;
+        $sameAmount = (int) $existing->total_amount === (int) round($amount);
 
         if (! $sameOrder || ! $sameAmount) {
             throw new IdempotencyConflict($idempotencyKey);

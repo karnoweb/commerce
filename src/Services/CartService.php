@@ -5,87 +5,67 @@ declare(strict_types=1);
 namespace Karnoweb\Commerce\Services;
 
 use Illuminate\Database\Eloquent\Collection;
-use Karnoweb\Commerce\DTOs\CartItemInput;
 use Karnoweb\Commerce\DTOs\LineItemInput;
-use Karnoweb\Commerce\Models\OrderItem;
+use Karnoweb\Commerce\Models\OrderLine;
 use Karnoweb\Commerce\Support\ResolvesConfiguredModels;
 
 /**
- * Package-safe cart persistence: an OrderItem with a null order_id is a
- * cart line. No session/auth helpers, no HTTP access, no shop model dependency — only a
- * soft `product_id` reference.
+ * Package-safe cart persistence: an OrderLine with a null order_id is a
+ * cart line. No session/auth helpers, no HTTP access, no shop model
+ * dependency — every line is a generic item_type/item_id/item_name
+ * reference. There is no `product_id` anywhere in this schema, and no
+ * per-line tax/discount column: `line_total_amount` is simply
+ * `quantity x unit_price_amount`.
  */
 class CartService
 {
     use ResolvesConfiguredModels;
 
     /**
-     * Add a line to the user's active cart (an OrderItem with order_id = null).
+     * Add a generic line (product/service/text/custom/anything the host
+     * defines) to the user's active cart. Backs CartBuilder::addLine() and
+     * its addProductItem()/addServiceItem()/addTextItem()/addCustomItem()
+     * deprecated aliases.
      */
-    public function addItem(int|string $userId, CartItemInput $input, int|string|null $branchId = null): OrderItem
+    public function addLine(int|string $userId, LineItemInput $input): OrderLine
     {
-        $extra = $input->extra;
+        $quantity = (float) $input->quantity;
+        $unitPriceAmount = (int) round($input->unitPrice);
+        $lineTotalAmount = (int) round($unitPriceAmount * $quantity);
 
-        if ($branchId !== null && ! array_key_exists('branch_id', $extra)) {
-            $extra['branch_id'] = $branchId;
+        $class = static::model('order_line');
+
+        /** @var OrderLine $line */
+        $line = $class::create([
+            'user_id' => $userId,
+            'branch_id' => $input->branchId,
+            'item_type' => $input->itemType,
+            'item_id' => $input->itemId,
+            'item_name' => $input->itemName,
+            'item_sku' => $input->itemSku,
+            'quantity' => $quantity,
+            'uom_code' => $input->uomCode,
+            'unit_price_amount' => $unitPriceAmount,
+            'line_total_amount' => $lineTotalAmount,
+            'expires_at' => $input->expiresAt,
+            'extra_attributes' => $input->extra === [] ? null : $input->extra,
+        ]);
+
+        foreach ($input->dimensions as $key => $value) {
+            $line->addDimension($key, $value);
         }
 
-        $class = static::model('order_item');
-
-        return $class::create([
-            'user_id' => $userId,
-            'product_id' => $input->productId,
-            'campaign_id' => $input->campaignId,
-            'quantity' => $input->quantity,
-            'base_price' => $input->unitPrice,
-            'sale_price' => $input->unitPrice,
-            'discount_amount' => $input->discountAmount,
-            'tax_amount' => $input->taxAmount,
-            'extra_attributes' => $extra === [] ? null : $extra,
-        ]);
-    }
-
-    /**
-     * Add a generic line (product/service/text/custom) to the user's active
-     * cart. Backs CartBuilder::addProductItem()/addServiceItem()/
-     * addTextItem()/addCustomItem() — the fluent, type-safe front door for
-     * this method.
-     */
-    public function addLine(int|string $userId, LineItemInput $input, int|string|null $branchId = null): OrderItem
-    {
-        $extra = $input->extra;
-
-        if ($branchId !== null && ! array_key_exists('branch_id', $extra)) {
-            $extra['branch_id'] = $branchId;
-        }
-
-        $class = static::model('order_item');
-
-        return $class::create([
-            'user_id' => $userId,
-            'product_id' => $input->productId,
-            'campaign_id' => $input->campaignId,
-            'item_type' => $input->type,
-            'title' => $input->title,
-            'itemable_type' => $input->itemableType,
-            'itemable_id' => $input->itemableId,
-            'quantity' => $input->quantity,
-            'base_price' => $input->unitPrice,
-            'sale_price' => $input->unitPrice,
-            'discount_amount' => $input->discountAmount,
-            'tax_amount' => $input->taxAmount,
-            'extra_attributes' => $extra === [] ? null : $extra,
-        ]);
+        return $line;
     }
 
     /**
      * Cart lines for a user (order_id is null), oldest first.
      *
-     * @return Collection<int, OrderItem>
+     * @return Collection<int, OrderLine>
      */
     public function items(int|string $userId): Collection
     {
-        $class = static::model('order_item');
+        $class = static::model('order_line');
 
         return $class::query()
             ->carts()
@@ -99,7 +79,7 @@ class CartService
      */
     public function clear(int|string $userId): int
     {
-        $class = static::model('order_item');
+        $class = static::model('order_line');
 
         return $class::query()
             ->carts()

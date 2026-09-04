@@ -4,196 +4,236 @@ declare(strict_types=1);
 
 namespace Karnoweb\Commerce\Tests\Feature;
 
-use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Event;
-use Karnoweb\Commerce\Contracts\DiscountCalculatorContract;
-use Karnoweb\Commerce\Contracts\TaxCalculatorContract;
-use Karnoweb\Commerce\Enums\LineItemTypeEnum;
+use Karnoweb\Commerce\Database\Seeders\CommerceSeeder;
 use Karnoweb\Commerce\Enums\OrderStatusEnum;
 use Karnoweb\Commerce\Enums\PaymentStatusEnum;
 use Karnoweb\Commerce\Events\PaymentInitiated;
 use Karnoweb\Commerce\Events\ReturnCreated;
-use Karnoweb\Commerce\Exceptions\CannotReturnWithoutItems;
+use Karnoweb\Commerce\Exceptions\CannotReturnWithoutLines;
 use Karnoweb\Commerce\Exceptions\IdempotencyConflict;
 use Karnoweb\Commerce\Exceptions\ReturnQuantityExceedsAvailable;
 use Karnoweb\Commerce\Facades\Commerce;
-use Karnoweb\Commerce\Models\Discount;
 use Karnoweb\Commerce\Models\Invoice;
 use Karnoweb\Commerce\Models\Order;
-use Karnoweb\Commerce\Models\OrderItem;
+use Karnoweb\Commerce\Models\OrderLine;
 use Karnoweb\Commerce\Models\OrderReturn;
-use Karnoweb\Commerce\Models\OrderReturnItem;
-use Karnoweb\Commerce\Models\OrderTotal;
-use Karnoweb\Commerce\Models\Payment;
+use Karnoweb\Commerce\Models\OrderReturnLine;
 use Karnoweb\Commerce\Models\PaymentMethod;
-use Karnoweb\Commerce\Models\ShippingMethod;
-use Karnoweb\Commerce\Models\Transaction;
-use Karnoweb\Commerce\Models\Wallet;
+use Karnoweb\Commerce\Models\ReturnReason;
 use Karnoweb\Commerce\Models\WalletTransaction;
-use Karnoweb\Commerce\Tests\Fixtures\FakeUser;
+use Karnoweb\Commerce\Tests\Support\ConfiguresCommerceModels;
 use Karnoweb\Commerce\Tests\TestCase;
 
 /**
- * Coverage for generic line items (product/service/text/custom) and
- * quantity-based returns — the "most businesses" feature set layered on
- * top of the Facade-centric flow from CommerceFacadeEndToEndTest. Runs
- * against a standalone sqlite install — no host models.
+ * Coverage for generic lines (item_type/item_id/item_name — no product_id
+ * anywhere), document_adjustments (shipping/tax/discount shortcuts +
+ * custom keys), document_dimensions (salesUnitId/warehouseId/addDimension),
+ * standalone invoices, normalized return reasons, and quantity-based
+ * returns tied to original sale lines. Runs against a standalone sqlite
+ * install — no host models.
  */
 final class CommerceGenericLineItemsAndReturnsTest extends TestCase
 {
+    use ConfiguresCommerceModels;
+
     protected function setUp(): void
     {
         parent::setUp();
 
-        config([
-            'commerce.models.user' => FakeUser::class,
-            'commerce.models.order' => Order::class,
-            'commerce.models.order_item' => OrderItem::class,
-            'commerce.models.order_return' => OrderReturn::class,
-            'commerce.models.order_return_item' => OrderReturnItem::class,
-            'commerce.models.order_total' => OrderTotal::class,
-            'commerce.models.invoice' => Invoice::class,
-            'commerce.models.payment' => Payment::class,
-            'commerce.models.transaction' => Transaction::class,
-            'commerce.models.discount' => Discount::class,
-            'commerce.models.wallet' => Wallet::class,
-            'commerce.models.wallet_transaction' => WalletTransaction::class,
-            'commerce.models.shipping_method' => ShippingMethod::class,
-            'commerce.models.payment_method' => PaymentMethod::class,
-            'commerce.models.product' => FakeUser::class,
-            'commerce.models.campaign' => FakeUser::class,
-            'commerce.models.address' => FakeUser::class,
-        ]);
+        $this->configureCommerceModels();
 
         $this->artisan('migrate', ['--force' => true]);
     }
 
-    public function test_cart_supports_product_service_text_and_custom_lines(): void
+    public function test_cart_supports_generic_product_service_text_and_custom_lines(): void
     {
         $userId = 1;
 
         Commerce::cart()
             ->forUser($userId)
-            ->addProductItem(productId: 501, quantity: 2, unitPrice: 1_000_000, extra: ['sku' => 'COF-1KG', 'title' => 'Coffee Beans 1kg'])
-            ->addServiceItem(title: 'Installation service', quantity: 1, unitPrice: 200_000)
+            ->addLine(itemType: 'shop.product', name: 'Coffee Beans 1kg', quantity: 2, unitPrice: 1_000_000, itemId: 501, sku: 'COF-1KG', uomCode: 'kg')
+            ->addProductItem(itemId: 502, name: 'Legacy alias product', quantity: 1, unitPrice: 10_000)
+            ->addServiceItem(name: 'Installation service', quantity: 1, unitPrice: 200_000)
             ->addTextItem(description: 'Special packaging', amount: 50_000)
-            ->addCustomItem(itemableType: 'gift_card', itemableId: 42, title: 'Gift card', quantity: 1, unitPrice: 100_000);
+            ->addCustomItem(itemType: 'gift_card', itemId: 42, name: 'Gift card', quantity: 1, unitPrice: 100_000);
 
-        $items = Commerce::cart()->forUser($userId)->items();
+        $lines = Commerce::cart()->forUser($userId)->items();
 
-        $this->assertCount(4, $items);
+        $this->assertCount(5, $lines);
 
-        $product = $items->firstWhere('item_type', LineItemTypeEnum::PRODUCT);
+        $product = $lines->firstWhere('item_id', 501);
         $this->assertNotNull($product);
-        $this->assertSame(501, $product->product_id);
-        $this->assertSame(2, $product->quantity);
-        $this->assertSame('Coffee Beans 1kg', $product->extra_attributes['title']);
+        $this->assertSame('shop.product', $product->item_type);
+        $this->assertSame('COF-1KG', $product->item_sku);
+        $this->assertSame('kg', $product->uom_code);
+        $this->assertEqualsWithDelta(2.0, (float) $product->quantity, 0.000001);
+        $this->assertSame(2_000_000, (int) $product->line_total_amount, 'line_total_amount is simply quantity x unit_price_amount.');
 
-        $service = $items->firstWhere('item_type', LineItemTypeEnum::SERVICE);
+        $aliasProduct = $lines->firstWhere('item_id', 502);
+        $this->assertNotNull($aliasProduct);
+        $this->assertSame('shop.product', $aliasProduct->item_type);
+
+        $service = $lines->firstWhere('item_type', 'custom.service');
         $this->assertNotNull($service);
-        $this->assertNull($service->product_id);
-        $this->assertSame('Installation service', $service->title);
-        $this->assertSame(200_000.0, (float) $service->sale_price);
+        $this->assertNull($service->item_id);
+        $this->assertSame('Installation service', $service->item_name);
+        $this->assertSame(200_000, (int) $service->unit_price_amount);
 
-        $text = $items->firstWhere('item_type', LineItemTypeEnum::TEXT);
+        $text = $lines->firstWhere('item_type', 'custom.text');
         $this->assertNotNull($text);
-        $this->assertSame(1, $text->quantity);
-        $this->assertSame('Special packaging', $text->title);
-        $this->assertSame(50_000.0, (float) $text->sale_price);
+        $this->assertEqualsWithDelta(1.0, (float) $text->quantity, 0.000001);
+        $this->assertSame('Special packaging', $text->item_name);
+        $this->assertSame(50_000, (int) $text->unit_price_amount);
 
-        $custom = $items->firstWhere('item_type', LineItemTypeEnum::CUSTOM);
+        $custom = $lines->firstWhere('item_type', 'gift_card');
         $this->assertNotNull($custom);
-        $this->assertNull($custom->product_id);
-        $this->assertSame('gift_card', $custom->itemable_type);
-        $this->assertSame(42, $custom->itemable_id);
-        $this->assertSame('Gift card', $custom->title);
+        $this->assertSame(42, $custom->item_id);
+        $this->assertSame('Gift card', $custom->item_name);
     }
 
-    public function test_checkout_place_is_idempotent_with_mixed_generic_lines(): void
+    public function test_cart_line_supports_expiry_date_for_purchase_receiving(): void
     {
-        $userId = 2;
+        $userId = 5;
 
         Commerce::cart()
             ->forUser($userId)
-            ->addProductItem(productId: 501, quantity: 2, unitPrice: 1_000_000)
-            ->addServiceItem(title: 'Installation', quantity: 1, unitPrice: 200_000)
-            ->addTextItem(description: 'Packaging', amount: 50_000);
+            ->addLine(
+                itemType: 'shop.product',
+                name: 'Milk 1L',
+                quantity: 10,
+                unitPrice: 30_000,
+                itemId: 900,
+                uomCode: 'ea',
+                expiresAt: '2027-01-15',
+            );
 
-        $first = Commerce::checkout()->forUser($userId)->idempotencyKey('checkout:generic:retry')->place();
-        $second = Commerce::checkout()->forUser($userId)->idempotencyKey('checkout:generic:retry')->place();
+        $line = Commerce::cart()->forUser($userId)->items()->first();
 
-        $this->assertSame($first->id, $second->id);
-        $this->assertSame(2_250_000.0, (float) $first->total); // 2*1,000,000 + 200,000 + 50,000
-        $this->assertSame(3, OrderItem::query()->where('order_id', $first->id)->count());
+        $this->assertSame('ea', $line->uom_code);
+        $this->assertNotNull($line->expires_at);
+        $this->assertSame('2027-01-15', $line->expires_at->toDateString());
     }
 
-    public function test_checkout_uses_null_tax_and_discount_calculators_by_default_when_not_specified(): void
+    public function test_cart_dimension_shortcuts_write_document_dimensions_rows_per_line(): void
+    {
+        $userId = 9;
+
+        Commerce::cart()
+            ->forUser($userId)
+            ->salesUnitId(77)
+            ->warehouseId(88)
+            ->addDimension('channel_id', 5)
+            ->addLine(itemType: 'shop.product', name: 'Widget', quantity: 1, unitPrice: 100_000, itemId: 1);
+
+        $line = Commerce::cart()->forUser($userId)->items()->first();
+
+        $this->assertSame(77, $line->dimensionValue('sales_unit_id'));
+        $this->assertSame(88, $line->dimensionValue('warehouse_id'));
+        $this->assertSame(5, $line->dimensionValue('channel_id'));
+    }
+
+    public function test_checkout_finalize_records_adjustments_dimensions_and_mandatory_invoice(): void
+    {
+        $userId = 2;
+        $salesUnitId = 77;
+        $warehouseId = 88;
+
+        Commerce::cart()->forUser($userId)->addLine(itemType: 'shop.product', name: 'Widget', quantity: 3, unitPrice: 100_000, itemId: 1);
+
+        $result = Commerce::checkout()
+            ->forUser($userId)
+            ->salesUnitId($salesUnitId)
+            ->warehouseId($warehouseId)
+            ->addDimension('channel_id', 5)
+            ->shippingAmount(20_000)
+            ->taxAmount(9_000)
+            ->discountAmount(10_000)
+            ->addAdjustment('rounding', 1, sign: 1)
+            ->finalize();
+
+        $order = $result->order;
+        $invoice = $result->invoice;
+
+        // subtotal 300,000 + shipping 20,000 + tax 9,000 - discount 10,000 + rounding 1
+        $this->assertSame(300_000, (int) $order->subtotal_amount);
+        $this->assertSame(20_000, $order->shippingAmount());
+        $this->assertSame(9_000, $order->taxAmount());
+        $this->assertSame(10_000, $order->discountAmount());
+        $this->assertSame(319_001, (int) $order->total_amount);
+        $this->assertSame($salesUnitId, $order->sales_unit_id);
+        $this->assertSame($warehouseId, $order->warehouse_id);
+
+        $this->assertInstanceOf(Invoice::class, $invoice);
+        $this->assertSame((int) $order->total_amount, (int) $invoice->amount);
+        $this->assertSame($salesUnitId, $invoice->sales_unit_id);
+        $this->assertSame($warehouseId, $invoice->warehouse_id);
+
+        // Adjustment ledger rows exist even for the zero-touching shortcuts (none are zero here, but all 4 exist).
+        $adjustments = $order->adjustments->keyBy('key');
+        $this->assertCount(4, $adjustments);
+        $this->assertSame(1, $adjustments['shipping']->sign);
+        $this->assertSame(20_000, (int) $adjustments['shipping']->amount);
+        $this->assertSame(-1, $adjustments['discount']->sign);
+        $this->assertSame(10_000, (int) $adjustments['discount']->amount);
+        $this->assertSame(1, (int) $adjustments['rounding']->amount);
+
+        // Generic reporting dimensions.
+        $dimensions = $order->dimensions->keyBy('key');
+        $this->assertSame($salesUnitId, (int) $dimensions['sales_unit_id']->value_int);
+        $this->assertSame($warehouseId, (int) $dimensions['warehouse_id']->value_int);
+        $this->assertSame(5, (int) $dimensions['channel_id']->value_int);
+    }
+
+    public function test_checkout_finalize_stores_zero_adjustments_when_not_set(): void
     {
         $userId = 3;
 
-        Commerce::cart()->forUser($userId)->addProductItem(productId: 1, quantity: 1, unitPrice: 100_000);
+        Commerce::cart()->forUser($userId)->addLine(itemType: 'shop.product', name: 'Widget', quantity: 1, unitPrice: 100_000, itemId: 1);
 
-        // Neither taxAmount() nor discountAmount() called -> falls back to
-        // the bound (no-op) calculators, exactly like an explicit 0 would.
-        $order = Commerce::checkout()->forUser($userId)->place();
+        $result = Commerce::checkout()->forUser($userId)->finalize();
 
-        $this->assertSame(0.0, (float) $order->tax_amount);
-        $this->assertSame(0.0, (float) $order->discount_amount);
-        $this->assertSame(100_000.0, (float) $order->total);
+        $order = $result->order->fresh();
+
+        $this->assertSame(0, $order->shippingAmount());
+        $this->assertSame(0, $order->taxAmount());
+        $this->assertSame(0, $order->discountAmount());
+        $this->assertSame(100_000, (int) $order->total_amount);
+
+        // Documented convention: shipping/tax/discount are always recorded, even at 0.
+        $this->assertSame(3, $order->adjustments()->count());
     }
 
-    public function test_checkout_totals_can_be_overridden_by_host_calculator_bindings(): void
+    public function test_invoices_issue_standalone_creates_an_invoice_with_no_order(): void
     {
-        $this->app->bind(TaxCalculatorContract::class, function () {
-            return new class implements TaxCalculatorContract
-            {
-                public function calculate(Collection $items, array $context): int|float
-                {
-                    return 12_345;
-                }
-            };
-        });
+        $invoice = Commerce::invoices()->issueStandalone(
+            amount: 500_000,
+            userId: 42,
+            branchId: 3,
+        );
 
-        $this->app->bind(DiscountCalculatorContract::class, function () {
-            return new class implements DiscountCalculatorContract
-            {
-                public function calculate(Collection $items, array $context): int|float
-                {
-                    return 1_000;
-                }
-            };
-        });
-
-        $userId = 4;
-
-        Commerce::cart()->forUser($userId)->addProductItem(productId: 1, quantity: 1, unitPrice: 100_000);
-
-        $order = Commerce::checkout()->forUser($userId)->place();
-
-        $this->assertSame(12_345.0, (float) $order->tax_amount);
-        $this->assertSame(1_000.0, (float) $order->discount_amount);
-        $this->assertSame(100_000.0 - 1_000 + 12_345, (float) $order->total);
+        $this->assertInstanceOf(Invoice::class, $invoice);
+        $this->assertNull($invoice->order_id);
+        $this->assertSame(500_000, (int) $invoice->amount);
+        $this->assertSame(42, $invoice->user_id);
     }
 
-    public function test_checkout_explicit_zero_wins_over_calculator_bindings(): void
+    public function test_invoices_issue_standalone_records_optional_adjustments_and_dimensions(): void
     {
-        $this->app->bind(TaxCalculatorContract::class, function () {
-            return new class implements TaxCalculatorContract
-            {
-                public function calculate(Collection $items, array $context): int|float
-                {
-                    return 99_999;
-                }
-            };
-        });
+        $invoice = Commerce::invoices()
+            ->salesUnitId(9)
+            ->taxAmount(5_000)
+            ->addAdjustment('coupon', 2_000, sign: -1)
+            ->issueStandalone(amount: 100_000, userId: 42);
 
-        $userId = 5;
+        $this->assertSame(9, $invoice->sales_unit_id);
+        $this->assertSame(9, (int) $invoice->dimensions->firstWhere('key', 'sales_unit_id')->value_int);
 
-        Commerce::cart()->forUser($userId)->addProductItem(productId: 1, quantity: 1, unitPrice: 100_000);
-
-        $order = Commerce::checkout()->forUser($userId)->taxAmount(0)->place();
-
-        $this->assertSame(0.0, (float) $order->tax_amount);
+        $adjustments = $invoice->adjustments->keyBy('key');
+        $this->assertSame(5_000, (int) $adjustments['tax']->amount);
+        $this->assertSame(-1, $adjustments['coupon']->sign);
+        // amount() is authoritative and is never recomputed from adjustments.
+        $this->assertSame(100_000, (int) $invoice->amount);
     }
 
     public function test_payment_initiate_dispatches_payment_initiated_event(): void
@@ -201,81 +241,90 @@ final class CommerceGenericLineItemsAndReturnsTest extends TestCase
         Event::fake();
 
         $userId = 6;
-        Commerce::cart()->forUser($userId)->addProductItem(productId: 1, quantity: 1, unitPrice: 100_000);
-        $order = Commerce::checkout()->forUser($userId)->place();
+        Commerce::cart()->forUser($userId)->addLine(itemType: 'shop.product', name: 'Widget', quantity: 1, unitPrice: 100_000, itemId: 1);
+        $result = Commerce::checkout()->forUser($userId)->finalize();
 
-        $payment = Commerce::payment()->forOrder($order)->amount((int) $order->total)->initiate();
+        $payment = Commerce::payments()->forInvoice($result->invoice)->amount((int) $result->invoice->amount)->initiate();
 
         $this->assertSame(PaymentStatusEnum::PENDING, $payment->status);
 
-        Event::assertDispatched(PaymentInitiated::class, function (PaymentInitiated $event) use ($order, $payment): bool {
-            return (string) $event->orderId === (string) $order->id
+        Event::assertDispatched(PaymentInitiated::class, function (PaymentInitiated $event) use ($result, $payment): bool {
+            return (string) $event->invoiceId === (string) $result->invoice->id
                 && (string) $event->paymentId === (string) $payment->id
-                && (float) $event->amount === (float) $order->total;
+                && (float) $event->amount === (float) $result->invoice->amount;
         });
 
-        $confirmed = Commerce::payment()->confirm($payment, gateway: 'zarinpal', trackingCode: 'TRK-GENERIC');
+        $confirmed = Commerce::payments()->confirm($payment, gateway: 'zarinpal', trackingCode: 'TRK-GENERIC');
 
         $this->assertSame(PaymentStatusEnum::PAID, $confirmed->status);
     }
 
     public function test_return_cannot_exceed_originally_sold_quantity(): void
     {
-        [$order, $productItem] = $this->placeOrderWithOneProductLine(quantity: 2);
+        [$order, $line] = $this->placeOrderWithOneLine(quantity: 2);
 
         $this->expectException(ReturnQuantityExceedsAvailable::class);
 
         Commerce::returns()
             ->forOrder($order)
-            ->addItem(orderItemId: $productItem->id, quantity: 3)
-            ->finalizeAndRefund();
+            ->addLine(orderLineId: $line->id, quantity: 3)
+            ->finalizeRefund();
     }
 
-    public function test_return_requires_at_least_one_item(): void
+    public function test_return_requires_at_least_one_line(): void
     {
-        [$order] = $this->placeOrderWithOneProductLine(quantity: 2);
+        [$order] = $this->placeOrderWithOneLine(quantity: 2);
 
-        $this->expectException(CannotReturnWithoutItems::class);
+        $this->expectException(CannotReturnWithoutLines::class);
 
-        Commerce::returns()->forOrder($order)->finalizeAndRefund();
+        Commerce::returns()->forOrder($order)->finalizeRefund();
     }
 
-    public function test_return_by_quantity_creates_order_return_and_items_and_refunds_to_wallet(): void
+    public function test_return_by_quantity_records_normalized_reason_and_refunds_to_wallet(): void
     {
         Event::fake();
+        $this->seed(CommerceSeeder::class);
 
         $userId = 7;
         $branchId = 3;
-        [$order, $productItem] = $this->placeOrderWithOneProductLine(quantity: 2, userId: $userId, unitPrice: 1_000_000);
+        [$order, $line] = $this->placeOrderWithOneLine(quantity: 2, userId: $userId, unitPrice: 1_000_000);
 
         $paymentMethod = PaymentMethod::query()->create(['provider' => 'zarinpal', 'published' => true]);
-        $payment = Commerce::payment()
+        $invoice = Invoice::query()->where('order_id', $order->id)->firstOrFail();
+        $payment = Commerce::payments()
+            ->forInvoice($invoice)
             ->forOrder($order)
             ->methodId($paymentMethod->id)
-            ->amount((int) $order->total)
+            ->amount((int) $invoice->amount)
             ->initiate();
-        Commerce::payment()->confirm($payment, gateway: 'zarinpal', trackingCode: 'TRK-RETURN');
+        Commerce::payments()->confirm($payment, gateway: 'zarinpal', trackingCode: 'TRK-RETURN');
+
+        $damagedReasonId = ReturnReason::query()->where('code', 'damaged')->value('id');
+        $this->assertNotNull($damagedReasonId, 'CommerceSeeder must seed a "damaged" return reason.');
 
         $orderReturn = Commerce::returns()
             ->forOrder($order)
             ->idempotencyKey('return:order:'.$order->id.':v1')
-            ->addItem(orderItemId: $productItem->id, quantity: 1, reason: 'Customer return')
-            ->finalizeAndRefundToWallet(userId: $userId, branchId: $branchId);
+            ->addLine(orderLineId: $line->id, quantity: 1, returnReasonId: $damagedReasonId, reasonNote: 'Box arrived crushed')
+            ->finalizeRefundToWallet(userId: $userId, branchId: $branchId);
 
         $this->assertInstanceOf(OrderReturn::class, $orderReturn);
-        $this->assertSame(1_000_000.0, (float) $orderReturn->amount);
+        $this->assertSame(1_000_000, (int) $orderReturn->total_amount);
 
-        $returnItems = OrderReturnItem::query()->where('order_return_id', $orderReturn->id)->get();
-        $this->assertCount(1, $returnItems);
-        $this->assertSame($productItem->id, $returnItems->first()->order_item_id);
-        $this->assertSame(1, $returnItems->first()->quantity);
-        $this->assertSame(1_000_000.0, (float) $returnItems->first()->amount);
+        $returnLines = OrderReturnLine::query()->where('order_return_id', $orderReturn->id)->get();
+        $this->assertCount(1, $returnLines);
+        $this->assertSame($line->id, $returnLines->first()->order_line_id);
+        $this->assertEqualsWithDelta(1.0, (float) $returnLines->first()->quantity, 0.000001);
+        $this->assertSame(1_000_000, (int) $returnLines->first()->amount);
+        $this->assertSame($damagedReasonId, $returnLines->first()->return_reason_id);
+        $this->assertSame('Box arrived crushed', $returnLines->first()->reason_note);
+        $this->assertSame('damaged', $returnLines->first()->returnReason->code);
 
         $walletTransaction = WalletTransaction::query()
             ->where('transactionable_type', $orderReturn->getMorphClass())
             ->where('transactionable_id', $orderReturn->id)
             ->first();
-        $this->assertNotNull($walletTransaction, 'Return must credit a WalletTransaction when finalizeAndRefundToWallet() is used.');
+        $this->assertNotNull($walletTransaction, 'Return must credit a WalletTransaction when finalizeRefundToWallet() is used.');
         $this->assertSame(1_000_000, (int) $walletTransaction->amount);
 
         // Only half the total was returned -> order stays PAID, not REFUNDED.
@@ -286,29 +335,47 @@ final class CommerceGenericLineItemsAndReturnsTest extends TestCase
             return (string) $event->orderId === (string) $order->id
                 && (string) $event->orderReturnId === (string) $orderReturn->id
                 && (float) $event->totalAmount === 1_000_000.0
-                && count($event->items) === 1
-                && (float) $event->items[0]['amount'] === 1_000_000.0;
+                && count($event->lines) === 1
+                && (float) $event->lines[0]['amount'] === 1_000_000.0;
         });
+    }
+
+    public function test_return_to_wallet_defaults_branch_id_to_zero_for_global_wallet(): void
+    {
+        $userId = 12;
+        [$order, $line] = $this->placeOrderWithOneLine(quantity: 1, userId: $userId, unitPrice: 500_000);
+
+        Commerce::returns()
+            ->forOrder($order)
+            ->addLine(orderLineId: $line->id, quantity: 1)
+            ->finalizeRefundToWallet(userId: $userId);
+
+        $walletTransaction = WalletTransaction::query()->latest('id')->first();
+        $this->assertNotNull($walletTransaction);
+        $wallet = $walletTransaction->wallet;
+        $this->assertSame(0, (int) $wallet->branch_id, 'Omitting branchId() must default to the global (0) wallet convention.');
     }
 
     public function test_return_full_quantity_flips_order_and_payments_to_refunded(): void
     {
         $userId = 8;
         $branchId = 3;
-        [$order, $productItem] = $this->placeOrderWithOneProductLine(quantity: 2, userId: $userId, unitPrice: 1_000_000);
+        [$order, $line] = $this->placeOrderWithOneLine(quantity: 2, userId: $userId, unitPrice: 1_000_000);
 
         $paymentMethod = PaymentMethod::query()->create(['provider' => 'zarinpal', 'published' => true]);
-        $payment = Commerce::payment()
+        $invoice = Invoice::query()->where('order_id', $order->id)->firstOrFail();
+        $payment = Commerce::payments()
+            ->forInvoice($invoice)
             ->forOrder($order)
             ->methodId($paymentMethod->id)
-            ->amount((int) $order->total)
+            ->amount((int) $invoice->amount)
             ->initiate();
-        Commerce::payment()->confirm($payment, gateway: 'zarinpal', trackingCode: 'TRK-FULL');
+        Commerce::payments()->confirm($payment, gateway: 'zarinpal', trackingCode: 'TRK-FULL');
 
         Commerce::returns()
             ->forOrder($order)
-            ->addItem(orderItemId: $productItem->id, quantity: 2, reason: 'Full return')
-            ->finalizeAndRefundToWallet(userId: $userId, branchId: $branchId);
+            ->addLine(orderLineId: $line->id, quantity: 2, reasonNote: 'Full return')
+            ->finalizeRefundToWallet(userId: $userId, branchId: $branchId);
 
         $order->refresh();
         $this->assertSame(OrderStatusEnum::REFUNDED, $order->status);
@@ -317,55 +384,55 @@ final class CommerceGenericLineItemsAndReturnsTest extends TestCase
 
     public function test_return_is_idempotent_for_retries_with_the_same_key(): void
     {
-        [$order, $productItem] = $this->placeOrderWithOneProductLine(quantity: 2);
+        [$order, $line] = $this->placeOrderWithOneLine(quantity: 2);
 
         $first = Commerce::returns()
             ->forOrder($order)
             ->idempotencyKey('return:retry')
-            ->addItem(orderItemId: $productItem->id, quantity: 1)
-            ->finalizeAndRefund();
+            ->addLine(orderLineId: $line->id, quantity: 1)
+            ->finalizeRefund();
 
         $second = Commerce::returns()
             ->forOrder($order)
             ->idempotencyKey('return:retry')
-            ->addItem(orderItemId: $productItem->id, quantity: 1)
-            ->finalizeAndRefund();
+            ->addLine(orderLineId: $line->id, quantity: 1)
+            ->finalizeRefund();
 
         $this->assertSame($first->id, $second->id);
         $this->assertSame(1, OrderReturn::query()->where('order_id', $order->id)->count());
-        $this->assertSame(1, OrderReturnItem::query()->where('order_return_id', $first->id)->count());
+        $this->assertSame(1, OrderReturnLine::query()->where('order_return_id', $first->id)->count());
     }
 
     public function test_return_throws_idempotency_conflict_for_a_different_order_with_the_same_key(): void
     {
-        [$orderA, $itemA] = $this->placeOrderWithOneProductLine(quantity: 2, userId: 10);
-        [$orderB, $itemB] = $this->placeOrderWithOneProductLine(quantity: 2, userId: 11);
+        [$orderA, $lineA] = $this->placeOrderWithOneLine(quantity: 2, userId: 10);
+        [$orderB, $lineB] = $this->placeOrderWithOneLine(quantity: 2, userId: 11);
 
         Commerce::returns()
             ->forOrder($orderA)
             ->idempotencyKey('return:shared')
-            ->addItem(orderItemId: $itemA->id, quantity: 1)
-            ->finalizeAndRefund();
+            ->addLine(orderLineId: $lineA->id, quantity: 1)
+            ->finalizeRefund();
 
         $this->expectException(IdempotencyConflict::class);
 
         Commerce::returns()
             ->forOrder($orderB)
             ->idempotencyKey('return:shared')
-            ->addItem(orderItemId: $itemB->id, quantity: 1)
-            ->finalizeAndRefund();
+            ->addLine(orderLineId: $lineB->id, quantity: 1)
+            ->finalizeRefund();
     }
 
     /**
-     * @return array{0: Order, 1: OrderItem}
+     * @return array{0: Order, 1: OrderLine}
      */
-    private function placeOrderWithOneProductLine(int $quantity, int $userId = 100, int $unitPrice = 500_000): array
+    private function placeOrderWithOneLine(int $quantity, int $userId = 100, int $unitPrice = 500_000): array
     {
-        Commerce::cart()->forUser($userId)->addProductItem(productId: 1, quantity: $quantity, unitPrice: $unitPrice);
+        Commerce::cart()->forUser($userId)->addLine(itemType: 'shop.product', name: 'Widget', quantity: $quantity, unitPrice: $unitPrice, itemId: 1);
 
-        $order = Commerce::checkout()->forUser($userId)->place();
-        $productItem = OrderItem::query()->where('order_id', $order->id)->first();
+        $result = Commerce::checkout()->forUser($userId)->finalize();
+        $line = OrderLine::query()->where('order_id', $result->order->id)->first();
 
-        return [$order, $productItem];
+        return [$result->order, $line];
     }
 }

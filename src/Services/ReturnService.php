@@ -5,13 +5,13 @@ declare(strict_types=1);
 namespace Karnoweb\Commerce\Services;
 
 use Illuminate\Support\Facades\DB;
-use Karnoweb\Commerce\DTOs\ReturnItemInput;
+use Karnoweb\Commerce\DTOs\ReturnLineInput;
 use Karnoweb\Commerce\Enums\OrderStatusEnum;
 use Karnoweb\Commerce\Enums\PaymentStatusEnum;
 use Karnoweb\Commerce\Events\ReturnCreated;
-use Karnoweb\Commerce\Exceptions\CannotReturnWithoutItems;
+use Karnoweb\Commerce\Exceptions\CannotReturnWithoutLines;
 use Karnoweb\Commerce\Exceptions\IdempotencyConflict;
-use Karnoweb\Commerce\Exceptions\ReturnItemNotFoundInOrder;
+use Karnoweb\Commerce\Exceptions\ReturnLineNotFoundInOrder;
 use Karnoweb\Commerce\Exceptions\ReturnQuantityExceedsAvailable;
 use Karnoweb\Commerce\Models\Order;
 use Karnoweb\Commerce\Models\OrderReturn;
@@ -19,14 +19,14 @@ use Karnoweb\Commerce\Support\CommerceEventDispatcher;
 use Karnoweb\Commerce\Support\ResolvesConfiguredModels;
 
 /**
- * Canonical quantity-based return flow: one or more ReturnItemInput lines,
- * each tied to an original sale line (OrderItem), are validated against how
+ * Canonical quantity-based return flow: one or more ReturnLineInput lines,
+ * each tied to an original sale line (OrderLine), are validated against how
  * much of that line is still returnable (sold - already returned) and
- * persisted as an OrderReturn + OrderReturnItem rows. Optionally credits a
+ * persisted as an OrderReturn + OrderReturnLine rows. Optionally credits a
  * wallet for the computed (or overridden) total. Once the sum of an order's
  * returns reaches its total, the order (and any PAID payments) transition to
  * REFUNDED — same rule RefundService uses, since both write to the same
- * order_returns.amount column.
+ * order_returns.total_amount column.
  *
  * Distinct from the legacy, amount-only RefundService: use this service
  * ("returns", not "refund") whenever the caller knows *which* lines and
@@ -39,22 +39,22 @@ class ReturnService
     public function __construct(private readonly WalletService $walletService) {}
 
     /**
-     * @param  list<ReturnItemInput>  $items
+     * @param  list<ReturnLineInput>  $lines
      * @param  array{user_id: int|string, branch_id: int|string}|null  $toWallet
      *
-     * @throws CannotReturnWithoutItems
-     * @throws ReturnItemNotFoundInOrder
+     * @throws CannotReturnWithoutLines
+     * @throws ReturnLineNotFoundInOrder
      * @throws ReturnQuantityExceedsAvailable
      * @throws IdempotencyConflict
      */
     public function process(
         Order $order,
-        array $items,
+        array $lines,
         ?string $idempotencyKey = null,
         ?array $toWallet = null,
         int|float|null $amountOverride = null,
     ): OrderReturn {
-        return DB::transaction(function () use ($order, $items, $idempotencyKey, $toWallet, $amountOverride): OrderReturn {
+        return DB::transaction(function () use ($order, $lines, $idempotencyKey, $toWallet, $amountOverride): OrderReturn {
             if ($idempotencyKey !== null) {
                 $existing = $this->findByIdempotencyKey($idempotencyKey);
 
@@ -65,73 +65,75 @@ class ReturnService
                 }
             }
 
-            if ($items === []) {
-                throw new CannotReturnWithoutItems($order->id);
+            if ($lines === []) {
+                throw new CannotReturnWithoutLines($order->id);
             }
 
-            $orderItemClass = static::model('order_item');
-            $orderReturnItemClass = static::model('order_return_item');
+            $orderLineClass = static::model('order_line');
+            $orderReturnLineClass = static::model('order_return_line');
 
-            $lines = [];
-            $totalAmount = 0.0;
+            $computedLines = [];
+            $totalAmount = 0;
 
-            foreach ($items as $item) {
-                $orderItem = $orderItemClass::query()
-                    ->where('id', $item->orderItemId)
+            foreach ($lines as $lineInput) {
+                /** @var ReturnLineInput $lineInput */
+                $orderLine = $orderLineClass::query()
+                    ->where('id', $lineInput->orderLineId)
                     ->where('order_id', $order->id)
                     ->first();
 
-                if ($orderItem === null) {
-                    throw new ReturnItemNotFoundInOrder($item->orderItemId, $order->id);
+                if ($orderLine === null) {
+                    throw new ReturnLineNotFoundInOrder($lineInput->orderLineId, $order->id);
                 }
 
-                $soldQuantity = (int) $orderItem->quantity;
-                $alreadyReturned = (int) $orderReturnItemClass::query()
-                    ->where('order_item_id', $orderItem->id)
+                $soldQuantity = (float) $orderLine->quantity;
+                $alreadyReturned = (float) $orderReturnLineClass::query()
+                    ->where('order_line_id', $orderLine->id)
                     ->sum('quantity');
-                $available = $soldQuantity - $alreadyReturned;
+                $available = round($soldQuantity - $alreadyReturned, 6);
+                $requestedQuantity = round((float) $lineInput->quantity, 6);
 
-                if ($item->quantity > $available) {
-                    throw new ReturnQuantityExceedsAvailable($orderItem->id, $item->quantity, $available);
+                if ($requestedQuantity > $available + 1e-9) {
+                    throw new ReturnQuantityExceedsAvailable($orderLine->id, $requestedQuantity, $available);
                 }
 
-                $unitPriceSnapshot = (float) ($orderItem->sale_price ?? $orderItem->price ?? 0);
-                $lineAmount = $unitPriceSnapshot * $item->quantity;
+                $unitPriceAmount = (int) $orderLine->unit_price_amount;
+                $lineAmount = (int) round($unitPriceAmount * $requestedQuantity);
                 $totalAmount += $lineAmount;
 
-                $lines[] = [
-                    'order_item_id' => $orderItem->id,
-                    'quantity' => $item->quantity,
-                    'unit_price_snapshot' => $unitPriceSnapshot,
+                $computedLines[] = [
+                    'order_line_id' => $orderLine->id,
+                    'quantity' => $requestedQuantity,
+                    'unit_price_amount' => $unitPriceAmount,
                     'amount' => $lineAmount,
-                    'reason' => $item->reason,
+                    'return_reason_id' => $lineInput->returnReasonId,
+                    'reason_note' => $lineInput->reasonNote,
                 ];
             }
 
-            $finalAmount = $amountOverride ?? $totalAmount;
+            $finalAmount = $amountOverride !== null ? (int) round($amountOverride) : $totalAmount;
 
             $orderReturnClass = static::model('order_return');
 
             /** @var OrderReturn $orderReturn */
             $orderReturn = $orderReturnClass::create([
                 'order_id' => $order->id,
-                'user_id' => $order->user_id,
-                'amount' => $finalAmount,
+                'total_amount' => $finalAmount,
                 'idempotency_key' => $idempotencyKey,
             ]);
 
-            $eventItems = [];
+            $eventLines = [];
 
-            foreach ($lines as $line) {
-                $returnItem = $orderReturnItemClass::create([
+            foreach ($computedLines as $line) {
+                $returnLine = $orderReturnLineClass::create([
                     'order_return_id' => $orderReturn->id,
                     ...$line,
                 ]);
 
-                $eventItems[] = [
-                    'orderItemId' => $returnItem->order_item_id,
-                    'quantity' => $returnItem->quantity,
-                    'amount' => $returnItem->amount,
+                $eventLines[] = [
+                    'orderLineId' => $returnLine->order_line_id,
+                    'quantity' => $returnLine->quantity,
+                    'amount' => $returnLine->amount,
                 ];
             }
 
@@ -153,7 +155,7 @@ class ReturnService
                 orderId: $order->id,
                 orderReturnId: $orderReturn->id,
                 totalAmount: $finalAmount,
-                items: $eventItems,
+                lines: $eventLines,
                 userId: $order->user_id,
             ));
 
@@ -163,16 +165,17 @@ class ReturnService
 
     /**
      * Once the sum of an order's returns (from either ReturnService or the
-     * legacy RefundService — both write to order_returns.amount) reaches
-     * the order total, flip the order and its PAID payments to REFUNDED.
+     * legacy RefundService — both write to order_returns.total_amount)
+     * reaches the order total, flip the order and its PAID payments to
+     * REFUNDED.
      */
     private function maybeTransitionOrderToRefunded(Order $order): void
     {
         $orderReturnClass = static::model('order_return');
 
-        $alreadyReturned = (float) $orderReturnClass::query()->where('order_id', $order->id)->sum('amount');
+        $alreadyReturned = (int) $orderReturnClass::query()->where('order_id', $order->id)->sum('total_amount');
 
-        if ($alreadyReturned >= (float) $order->total) {
+        if ($alreadyReturned >= (int) $order->total_amount) {
             $order->update(['status' => OrderStatusEnum::REFUNDED]);
 
             $paymentClass = static::model('payment');

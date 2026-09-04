@@ -13,7 +13,7 @@ $WalletTx = Commerce::model('wallet_transaction');
 $wallet = $Wallet::query()->create([
     'reference_type' => $user::class,
     'reference_id' => $user->id,
-    'branch_id' => 1,
+    'branch_id' => 1, // همیشه NOT NULL — قرارداد: 0 = «سراسری» (بدون شعبه خاص)
     'primary' => true,
 ]);
 

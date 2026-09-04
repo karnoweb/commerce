@@ -30,11 +30,6 @@ class PaymentMethod extends BaseModel
         ];
     }
 
-    public function orders(): HasMany
-    {
-        return $this->hasMany(config('commerce.models.order', Order::class));
-    }
-
     public function payments(): HasMany
     {
         return $this->hasMany(config('commerce.models.payment', Payment::class));

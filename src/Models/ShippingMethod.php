@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Karnoweb\Commerce\Models;
 
 use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Karnoweb\Translation\Concerns\HasTranslation;
 
@@ -41,20 +40,15 @@ class ShippingMethod extends BaseModel
     {
         return [
             'published' => 'boolean',
-            'price' => 'decimal:0',
-            'free_threshold' => 'decimal:0',
-            'min_order_amount' => 'decimal:0',
+            'price' => 'integer',
+            'free_threshold' => 'integer',
+            'min_order_amount' => 'integer',
             'max_weight' => 'decimal:2',
             'estimated_days' => 'integer',
             'ordering' => 'integer',
             'extra_attributes' => 'array',
             'languages' => 'array',
         ];
-    }
-
-    public function orders(): HasMany
-    {
-        return $this->hasMany(config('commerce.models.order', Order::class));
     }
 
     public function scopeActive(Builder $query): Builder

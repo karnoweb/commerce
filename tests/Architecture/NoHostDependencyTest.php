@@ -35,7 +35,7 @@ final class NoHostDependencyTest extends TestCase
 
     public function test_src_does_not_import_forbidden_namespaces(): void
     {
-        $src = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'src';
+        $src = dirname(__DIR__, 2).DIRECTORY_SEPARATOR.'src';
 
         foreach (SourceScanner::phpFiles($src) as $file) {
             $contents = (string) file_get_contents($file);
@@ -60,7 +60,7 @@ final class NoHostDependencyTest extends TestCase
 
     public function test_illuminate_usage_stays_within_allowed_prefixes(): void
     {
-        $src = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'src';
+        $src = dirname(__DIR__, 2).DIRECTORY_SEPARATOR.'src';
 
         foreach (SourceScanner::phpFiles($src) as $file) {
             foreach (SourceScanner::importedAndQualifiedNames((string) file_get_contents($file)) as $name) {

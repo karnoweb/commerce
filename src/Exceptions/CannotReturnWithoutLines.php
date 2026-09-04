@@ -9,10 +9,10 @@ use Throwable;
 
 /**
  * Thrown by ReturnService::process() when finalize*() is called without
- * a single addItem() call — a return must reference at least one
+ * a single addLine() call — a return must reference at least one
  * original sale line.
  */
-class CannotReturnWithoutItems extends RuntimeException
+class CannotReturnWithoutLines extends RuntimeException
 {
     public function __construct(
         public readonly int|string|null $orderId = null,
@@ -21,7 +21,7 @@ class CannotReturnWithoutItems extends RuntimeException
         ?Throwable $previous = null
     ) {
         parent::__construct(
-            $message ?: __('commerce::commerce.messages.cannot_return_without_items'),
+            $message ?: __('commerce::commerce.messages.cannot_return_without_lines'),
             $code,
             $previous
         );

@@ -5,32 +5,32 @@ declare(strict_types=1);
 namespace Karnoweb\Commerce\Builders;
 
 use InvalidArgumentException;
-use Karnoweb\Commerce\DTOs\ReturnItemInput;
+use Karnoweb\Commerce\DTOs\ReturnLineInput;
 use Karnoweb\Commerce\Models\Order;
 use Karnoweb\Commerce\Models\OrderReturn;
 use Karnoweb\Commerce\Services\ReturnService;
 
 /**
- * Fluent entry point for quantity-based returns: addItem() queues one
- * returned quantity against an original sale line; finalizeAndRefund*()
- * validates all queued lines together, persists the OrderReturn +
- * OrderReturnItem rows in one transaction, and (optionally) credits a
- * wallet. Prefer this over Commerce::refund() when you know which lines
- * and how many units are coming back.
+ * Fluent entry point for quantity-based returns: addLine() queues one
+ * returned quantity against an original sale line (an OrderLine id);
+ * finalizeRefund*() validates all queued lines together, persists the
+ * OrderReturn + OrderReturnLine rows in one transaction, and (optionally)
+ * credits a wallet. Prefer this over Commerce::refund() when you know
+ * which lines and how many units are coming back.
  *
  * @example
  * $return = Commerce::returns()
  *     ->forOrder($order)
  *     ->idempotencyKey('return:order:'.$order->id.':v1')
- *     ->addItem(orderItemId: $order->items()->first()->id, quantity: 1, reason: 'Customer return')
- *     ->finalizeAndRefundToWallet(userId: $userId, branchId: $branchId);
+ *     ->addLine(orderLineId: $order->lines()->first()->id, quantity: 1, reasonNote: 'Customer return')
+ *     ->finalizeRefundToWallet(userId: $userId, branchId: $branchId);
  */
 class ReturnBuilder
 {
     private ?Order $order = null;
 
-    /** @var list<ReturnItemInput> */
-    private array $items = [];
+    /** @var list<ReturnLineInput> */
+    private array $lines = [];
 
     private ?string $idempotencyKey = null;
 
@@ -43,7 +43,7 @@ class ReturnBuilder
         return $this;
     }
 
-    /** Optional DB-unique key for safe retries of finalizeAndRefund*(). */
+    /** Optional DB-unique key for safe retries of finalizeRefund*(). */
     public function idempotencyKey(string $key): self
     {
         $this->idempotencyKey = $key;
@@ -52,35 +52,49 @@ class ReturnBuilder
     }
 
     /**
-     * Queue a returned quantity against an original sale line. Call
-     * multiple times to return several lines in one OrderReturn. Not
-     * persisted until finalizeAndRefund*() is called.
+     * Queue a returned quantity against an original sale line (OrderLine
+     * id). Call multiple times to return several lines in one OrderReturn.
+     * Not persisted until finalizeRefund*() is called. $returnReasonId is
+     * a soft/internal reference to a ReturnReason row (see
+     * database/seeders/CommerceSeeder.php for seeded defaults);
+     * $reasonNote is an optional free-text note alongside it.
      */
-    public function addItem(int|string $orderItemId, int $quantity, ?string $reason = null): self
+    public function addLine(int|string $orderLineId, int|float $quantity, int|string|null $returnReasonId = null, ?string $reasonNote = null): self
     {
-        $this->items[] = new ReturnItemInput($orderItemId, $quantity, $reason);
+        $this->lines[] = new ReturnLineInput($orderLineId, $quantity, $returnReasonId, $reasonNote);
 
         return $this;
     }
 
     /**
-     * Validate and persist the queued lines as an OrderReturn, crediting
-     * the given owner's wallet for the computed total.
+     * @deprecated Prefer addLine(). Kept as a thin alias.
      */
-    public function finalizeAndRefundToWallet(int|string $userId, int|string|null $branchId = null): OrderReturn
+    public function addItem(int|string $orderLineId, int|float $quantity, int|string|null $returnReasonId = null, ?string $reasonNote = null): self
+    {
+        return $this->addLine($orderLineId, $quantity, $returnReasonId, $reasonNote);
+    }
+
+    /**
+     * Validate and persist the queued lines as an OrderReturn, crediting
+     * the given owner's wallet for the computed total. $branchId defaults
+     * to 0 ("global" — see Wallet's branch_id convention).
+     */
+    public function finalizeRefundToWallet(int|string $userId, int|string $branchId = 0): OrderReturn
     {
         $this->assertReady();
 
-        if ($branchId === null) {
-            throw new InvalidArgumentException('ReturnBuilder::finalizeAndRefundToWallet() requires a branchId.');
-        }
-
         return $this->returnService->process(
             $this->order,
-            $this->items,
+            $this->lines,
             $this->idempotencyKey,
             ['user_id' => $userId, 'branch_id' => $branchId],
         );
+    }
+
+    /** @deprecated Prefer finalizeRefundToWallet(). Kept as a thin alias. */
+    public function finalizeAndRefundToWallet(int|string $userId, int|string $branchId = 0): OrderReturn
+    {
+        return $this->finalizeRefundToWallet($userId, $branchId);
     }
 
     /**
@@ -89,17 +103,23 @@ class ReturnBuilder
      * (cash, gateway refund, ...) itself. $amountOverride replaces the
      * amount computed from quantities x unit price snapshots when set.
      */
-    public function finalizeAndRefund(int|float|null $amountOverride = null): OrderReturn
+    public function finalizeRefund(int|float|null $amountOverride = null): OrderReturn
     {
         $this->assertReady();
 
         return $this->returnService->process(
             $this->order,
-            $this->items,
+            $this->lines,
             $this->idempotencyKey,
             null,
             $amountOverride,
         );
+    }
+
+    /** @deprecated Prefer finalizeRefund(). Kept as a thin alias. */
+    public function finalizeAndRefund(int|float|null $amountOverride = null): OrderReturn
+    {
+        return $this->finalizeRefund($amountOverride);
     }
 
     private function assertReady(): void

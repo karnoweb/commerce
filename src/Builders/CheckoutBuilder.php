@@ -5,24 +5,30 @@ declare(strict_types=1);
 namespace Karnoweb\Commerce\Builders;
 
 use InvalidArgumentException;
+use Karnoweb\Commerce\DTOs\CheckoutResult;
 use Karnoweb\Commerce\Models\Invoice;
 use Karnoweb\Commerce\Models\Order;
 use Karnoweb\Commerce\Services\CheckoutService;
 
 /**
- * Fluent entry point for placing an order from a user's cart and (optionally)
- * creating its invoice. Commerce never talks to a payment gateway — pair
- * this with Commerce::payment() once the host has an outcome to report.
+ * Fluent entry point for placing an order from a user's cart. finalize()
+ * always creates the order's mandatory invoice — Commerce never leaves an
+ * order unbilled. Commerce never talks to a payment gateway — pair this
+ * with Commerce::payments() once the host has an outcome to report.
  *
  * @example
- * $order = Commerce::checkout()
+ * $result = Commerce::checkout()
  *     ->forUser($userId)
  *     ->branchId($branchId)
+ *     ->salesUnitId($salesUnitId)
+ *     ->warehouseId($warehouseId)
  *     ->shippingAmount(50_000)
+ *     ->taxAmount(90_000)
  *     ->idempotencyKey('checkout:user:9001:cart:active')
- *     ->place();
+ *     ->finalize();
  *
- * $invoice = Commerce::checkout()->forOrder($order)->createInvoice();
+ * $result->order;   // Order
+ * $result->invoice; // Invoice (always present)
  */
 class CheckoutBuilder
 {
@@ -32,19 +38,35 @@ class CheckoutBuilder
 
     private int|string|null $branchId = null;
 
+    private int|string|null $salesUnitId = null;
+
+    private int|string|null $warehouseId = null;
+
     private int|float $shippingAmount = 0;
 
-    private int|float|null $taxAmount = null;
+    private int|float $taxAmount = 0;
 
-    private int|float|null $discountAmount = null;
+    private int|float $discountAmount = 0;
+
+    /** @var list<array{key: string, sign: int, amount: int|float, payload: array|null}> */
+    private array $customAdjustments = [];
+
+    /** @var array<string, mixed> */
+    private array $dimensions = [];
 
     private ?string $orderNumber = null;
 
     private ?string $idempotencyKey = null;
 
+    private ?string $currency = null;
+
+    private ?string $note = null;
+
+    private ?string $invoiceNumber = null;
+
     public function __construct(private readonly CheckoutService $checkoutService) {}
 
-    /** Set the checkout owner. Required before place(). */
+    /** Set the checkout owner. Required before finalize(). */
     public function forUser(int|string $userId): self
     {
         $this->userId = $userId;
@@ -68,6 +90,39 @@ class CheckoutBuilder
         return $this;
     }
 
+    /** Reporting dimension: which sales unit sold this order. Writes orders.sales_unit_id AND a document_dimensions row. */
+    public function salesUnitId(int|string $salesUnitId): self
+    {
+        $this->salesUnitId = $salesUnitId;
+        $this->dimensions['sales_unit_id'] = $salesUnitId;
+
+        return $this;
+    }
+
+    /** Reporting dimension: which warehouse is involved. Writes orders.warehouse_id AND a document_dimensions row. */
+    public function warehouseId(int|string $warehouseId): self
+    {
+        $this->warehouseId = $warehouseId;
+        $this->dimensions['warehouse_id'] = $warehouseId;
+
+        return $this;
+    }
+
+    /** Arbitrary reporting dimension (region_id, channel_id, cashier_id, ...) — a document_dimensions row only. */
+    public function addDimension(string $key, mixed $value): self
+    {
+        $this->dimensions[$key] = $value;
+
+        return $this;
+    }
+
+    /** @deprecated Prefer addDimension(). Kept as a thin alias. */
+    public function addContext(string $key, mixed $value): self
+    {
+        return $this->addDimension($key, $value);
+    }
+
+    /** Shortcut over document_adjustments: key=shipping, sign=+1. Always recorded, even when 0. */
     public function shippingAmount(int|float $amount): self
     {
         $this->shippingAmount = $amount;
@@ -75,7 +130,7 @@ class CheckoutBuilder
         return $this;
     }
 
-    /** Explicit order-level tax. When omitted, the bound TaxCalculatorContract computes it (default: 0). */
+    /** Shortcut over document_adjustments: key=tax, sign=+1. Always recorded, even when 0. */
     public function taxAmount(int|float $amount): self
     {
         $this->taxAmount = $amount;
@@ -83,10 +138,21 @@ class CheckoutBuilder
         return $this;
     }
 
-    /** Explicit order-level discount. When omitted, the bound DiscountCalculatorContract computes it (default: 0). */
+    /** Shortcut over document_adjustments: key=discount, sign=-1. Always recorded, even when 0. */
     public function discountAmount(int|float $amount): self
     {
         $this->discountAmount = $amount;
+
+        return $this;
+    }
+
+    /**
+     * Add an arbitrary document_adjustments row (fee, rounding, coupon, a
+     * host-defined key, ...) beyond the shipping/tax/discount shortcuts.
+     */
+    public function addAdjustment(string $key, int|float $amount, int $sign = 1, ?array $payload = null): self
+    {
+        $this->customAdjustments[] = ['key' => $key, 'sign' => $sign, 'amount' => $amount, 'payload' => $payload];
 
         return $this;
     }
@@ -99,7 +165,7 @@ class CheckoutBuilder
         return $this;
     }
 
-    /** Optional DB-unique key for safe retries of place(). */
+    /** Optional DB-unique key for safe retries of finalize(). */
     public function idempotencyKey(string $key): self
     {
         $this->idempotencyKey = $key;
@@ -107,38 +173,84 @@ class CheckoutBuilder
         return $this;
     }
 
-    /**
-     * Create the order from the user's cart, attach the cart items, and
-     * dispatch OrderCreated after commit. Retry-safe when idempotencyKey()
-     * is set: a second call with the same key returns the same order.
-     */
-    public function place(): Order
+    public function currency(string $currency): self
     {
-        if ($this->userId === null) {
-            throw new InvalidArgumentException('CheckoutBuilder::place() requires forUser() before use.');
-        }
+        $this->currency = $currency;
 
-        $this->order = $this->checkoutService->placeFromCart([
-            'user_id' => $this->userId,
-            'branch_id' => $this->branchId,
-            'shipping_amount' => $this->shippingAmount,
-            ...($this->taxAmount !== null ? ['tax_amount' => $this->taxAmount] : []),
-            ...($this->discountAmount !== null ? ['discount_amount' => $this->discountAmount] : []),
-            'order_number' => $this->orderNumber,
-            'idempotency_key' => $this->idempotencyKey,
-        ]);
+        return $this;
+    }
 
-        return $this->order;
+    public function note(string $note): self
+    {
+        $this->note = $note;
+
+        return $this;
+    }
+
+    /** Override the generated invoice number for the mandatory invoice finalize() creates. */
+    public function invoiceNumber(string $invoiceNumber): self
+    {
+        $this->invoiceNumber = $invoiceNumber;
+
+        return $this;
     }
 
     /**
-     * Optional package-safe invoice for the current order (set via
-     * forOrder() or a prior place() call in this builder instance).
+     * Create the order from the user's cart, attach the cart lines, record
+     * shipping/tax/discount + any custom adjustments, write sales unit /
+     * warehouse / custom dimensions, and create the order's mandatory
+     * invoice — all in one transaction, dispatching OrderCreated +
+     * InvoiceIssued after commit. Retry-safe when idempotencyKey() is set:
+     * a second call with the same key returns the same CheckoutResult.
+     */
+    public function finalize(): CheckoutResult
+    {
+        if ($this->userId === null) {
+            throw new InvalidArgumentException('CheckoutBuilder::finalize() requires forUser() before use.');
+        }
+
+        $adjustments = [
+            ['key' => 'shipping', 'sign' => 1, 'amount' => $this->shippingAmount, 'payload' => null],
+            ['key' => 'tax', 'sign' => 1, 'amount' => $this->taxAmount, 'payload' => null],
+            ['key' => 'discount', 'sign' => -1, 'amount' => $this->discountAmount, 'payload' => null],
+            ...$this->customAdjustments,
+        ];
+
+        $result = $this->checkoutService->finalize([
+            'user_id' => $this->userId,
+            'branch_id' => $this->branchId,
+            'sales_unit_id' => $this->salesUnitId,
+            'warehouse_id' => $this->warehouseId,
+            'order_number' => $this->orderNumber,
+            'idempotency_key' => $this->idempotencyKey,
+            'currency' => $this->currency,
+            'note' => $this->note,
+            'invoice_number' => $this->invoiceNumber,
+            'adjustments' => $adjustments,
+            'dimensions' => $this->dimensions,
+        ]);
+
+        $this->order = $result->order;
+
+        return $result;
+    }
+
+    /** @deprecated Alias for finalize(). Kept for backward compatibility. */
+    public function place(): CheckoutResult
+    {
+        return $this->finalize();
+    }
+
+    /**
+     * Attach an *additional* invoice to the current order (set via
+     * forOrder() or a prior finalize() call in this builder instance).
+     * finalize() already creates the mandatory one — use this only when a
+     * second invoice is genuinely needed.
      */
     public function createInvoice(?string $invoiceNumber = null): Invoice
     {
         if ($this->order === null) {
-            throw new InvalidArgumentException('CheckoutBuilder::createInvoice() requires forOrder() or a prior place() call.');
+            throw new InvalidArgumentException('CheckoutBuilder::createInvoice() requires forOrder() or a prior finalize() call.');
         }
 
         return $this->checkoutService->createInvoice($this->order, $invoiceNumber);

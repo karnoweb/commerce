@@ -5,23 +5,19 @@ declare(strict_types=1);
 namespace Karnoweb\Commerce\Models;
 
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Database\Eloquent\SoftDeletes;
 
+/**
+ * A single gateway outcome reported by the host against a Payment
+ * (`payment_id` required). Commerce never calls a gateway itself — this
+ * row only records the result the host already obtained.
+ */
 class Transaction extends BaseModel
 {
-    use SoftDeletes;
-
     protected $fillable = [
-        'user_id',
-        'payment_method_id',
-        'order_id',
-        'type',
-        'amount',
-        'status',
-        'authority',
+        'payment_id',
+        'gateway',
         'ref_id',
         'tracking_code',
-        'card_number',
         'gateway_response',
         'paid_at',
         'extra_attributes',
@@ -30,26 +26,14 @@ class Transaction extends BaseModel
     protected function casts(): array
     {
         return [
-            'amount' => 'decimal:0',
-            'paid_at' => 'immutable_datetime',
             'gateway_response' => 'array',
+            'paid_at' => 'immutable_datetime',
             'extra_attributes' => 'array',
-            'deleted_at' => 'immutable_datetime',
         ];
     }
 
-    public function order(): BelongsTo
+    public function payment(): BelongsTo
     {
-        return $this->belongsTo(config('commerce.models.order', Order::class));
-    }
-
-    public function paymentMethod(): BelongsTo
-    {
-        return $this->belongsTo(config('commerce.models.payment_method', PaymentMethod::class));
-    }
-
-    public function user(): BelongsTo
-    {
-        return $this->belongsTo(config('commerce.models.user'));
+        return $this->belongsTo(config('commerce.models.payment', Payment::class));
     }
 }

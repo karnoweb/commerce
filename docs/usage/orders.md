@@ -1,6 +1,6 @@
-# سفارش و سبد
+# سفارش و سبد (مدل‌محور — پیشرفته)
 
-> برای جریان کانونیک با idempotency و انتقال وضعیت خودکار، از `Commerce::cart()`/`Commerce::checkout()` استفاده کنید — [quickstart.md](quickstart.md). این سند همان مسیر مدل‌محور قبلی را توضیح می‌دهد (هنوز معتبر، additive).
+> برای جریان کانونیک با idempotency و انتقال وضعیت خودکار، از `Commerce::cart()`/`Commerce::checkout()` استفاده کنید — [quickstart.md](quickstart.md). این سند همان کار را روی مدل‌ها به‌صورت خام نشان می‌دهد؛ فقط برای درک ساختار جدول‌ها یا کوئری‌های سفارشی مفید است.
 
 ```php
 use Karnoweb\Commerce\Enums\OrderStatusEnum;
@@ -8,48 +8,59 @@ use Karnoweb\Commerce\Enums\OrderTypeEnum;
 use Karnoweb\Commerce\Facades\Commerce;
 
 $Order = Commerce::model('order');
-$OrderItem = Commerce::model('order_item');
+$OrderLine = Commerce::model('order_line');
 
-// خط سبد (بدون order_id)
-$OrderItem::query()->create([
+// خط سبد (بدون order_id) — ارجاع ژنریک، بدون product_id.
+// line_total_amount همیشه quantity x unit_price_amount است — بدون
+// ستون تخفیف/مالیات در سطح خط.
+$OrderLine::query()->create([
     'user_id' => $userId,
-    'product_id' => $productId,
+    'item_type' => 'shop.product',
+    'item_id' => $productId,   // soft، nullable
+    'item_name' => 'Coffee Beans 1kg',
     'quantity' => 2,
-    'sale_price' => 500_000,
-    'discount_amount' => 0,
+    'unit_price_amount' => 500_000,
+    'line_total_amount' => 1_000_000,
 ]);
 
-$cart = $OrderItem::query()->carts()->where('user_id', $userId)->get();
+$cart = $OrderLine::query()->carts()->where('user_id', $userId)->get();
 
+// orders فقط subtotal_amount/total_amount را ذخیره می‌کند — هیچ ستون
+// discount_amount/tax_amount/shipping_amount ای وجود ندارد؛ آن‌ها فقط
+// از طریق document_adjustments (پایین) ثبت می‌شوند.
 $order = $Order::query()->create([
     'order_number' => 'ORD-1001',
     'user_id' => $userId,
     'status' => OrderStatusEnum::PENDING,
     'type' => OrderTypeEnum::SALE,
-    'subtotal' => 1_000_000,
-    'discount_amount' => 0,
-    'tax_amount' => 0,
-    'shipping_amount' => 50_000,
-    'total' => 1_050_000,
+    'subtotal_amount' => 1_000_000,
+    'total_amount' => 1_050_000,
 ]);
 
 // اتصال سبد به سفارش
-$OrderItem::query()
+$OrderLine::query()
     ->carts()
     ->where('user_id', $userId)
     ->update(['order_id' => $order->id]);
+
+// شکست مبلغ (shipping/tax/discount/هر کلید دلخواه) به‌عنوان یک ردیف
+// document_adjustments — رابطهٔ polymorphic روی order (یا invoice).
+$order->adjustments()->create(['key' => 'shipping', 'sign' => 1, 'amount' => 50_000]);
+
+$order->shippingAmount(); // 50000 — accessor محاسبه‌شده، نه ستون DB
 ```
 
 ## قوانین
 
 - ساخت سفارش «کامل» (قیمت‌گذاری، تخفیف، موجودی) را در Action میزبان نگه دارید؛ مدل فقط persistence است.
-- برای `itemable` از مدل محصول configشده استفاده کنید.
+- هیچ `product_id` ستونی در `order_lines` نیست — ارجاع همیشه `item_type`+`item_id` (soft) با اسنپ‌شات `item_name` است.
+- هیچ `discount_amount`/`tax_amount`/`shipping_amount` ستونی روی `orders`/`invoices` نیست — `document_adjustments` منبع واحد حقیقت است ([architecture.md](../concepts/architecture.md)).
 - وضعیت را با معنای enum جلو ببرید؛ چرخهٔ مجاز (مثلاً pending→paid) قانون میزبان است.
 
 ## خطاها
 
-پکیج استثناهای lifecycle مثل HR ندارد؛ اعتبارسنجی را در FormRequest/Action میزبان بنویسید.
+پکیج استثناهای lifecycle مثل HR ندارد؛ اعتبارسنجی را در FormRequest/Action میزبان بنویسید. برای مسیر Facade، استثناهای دامنه در [quickstart.md](quickstart.md) لیست شده‌اند.
 
 ## نتیجه ذخیره‌شده
 
-ردیف `orders` و به‌روزرسانی `order_id` روی اقلام سبد. روابط `items`، `totals`، `invoices`، `payments` بعداً پر می‌شوند.
+ردیف `orders` و به‌روزرسانی `order_id` روی خطوط سبد. روابط `lines`، `adjustments`، `dimensions`، `invoices`، `payments`، `returns` بعداً پر می‌شوند.

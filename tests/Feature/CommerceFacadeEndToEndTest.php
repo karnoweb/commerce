@@ -5,60 +5,44 @@ declare(strict_types=1);
 namespace Karnoweb\Commerce\Tests\Feature;
 
 use Illuminate\Support\Facades\Event;
+use Karnoweb\Commerce\DTOs\CheckoutResult;
 use Karnoweb\Commerce\Enums\OrderStatusEnum;
 use Karnoweb\Commerce\Enums\PaymentStatusEnum;
 use Karnoweb\Commerce\Enums\PaymentTypeEnum;
 use Karnoweb\Commerce\Events\InvoiceFullyPaid;
+use Karnoweb\Commerce\Events\InvoiceIssued;
 use Karnoweb\Commerce\Events\OrderCreated;
 use Karnoweb\Commerce\Events\OrderPaid;
+use Karnoweb\Commerce\Events\PaymentConfirmed;
 use Karnoweb\Commerce\Events\RefundCreated;
 use Karnoweb\Commerce\Exceptions\CannotCheckoutEmptyCart;
 use Karnoweb\Commerce\Exceptions\IdempotencyConflict;
 use Karnoweb\Commerce\Facades\Commerce;
-use Karnoweb\Commerce\Models\Discount;
 use Karnoweb\Commerce\Models\Invoice;
 use Karnoweb\Commerce\Models\Order;
-use Karnoweb\Commerce\Models\OrderItem;
+use Karnoweb\Commerce\Models\OrderLine;
 use Karnoweb\Commerce\Models\OrderReturn;
-use Karnoweb\Commerce\Models\OrderTotal;
-use Karnoweb\Commerce\Models\Payment;
 use Karnoweb\Commerce\Models\PaymentMethod;
-use Karnoweb\Commerce\Models\ShippingMethod;
 use Karnoweb\Commerce\Models\Transaction;
-use Karnoweb\Commerce\Models\Wallet;
 use Karnoweb\Commerce\Models\WalletTransaction;
-use Karnoweb\Commerce\Tests\Fixtures\FakeUser;
+use Karnoweb\Commerce\Tests\Support\ConfiguresCommerceModels;
 use Karnoweb\Commerce\Tests\TestCase;
 
 /**
- * End-to-end coverage of the canonical Facade flow from section 2 of the
- * commerce package mission: cart -> checkout -> invoice -> payment ->
- * refund. Runs against a standalone sqlite install — no host models.
+ * End-to-end coverage of the canonical Facade flow: cart -> checkout
+ * (finalize, mandatory invoice) -> payment (invoice-centric) -> confirm ->
+ * legacy amount-only refund. Runs against a standalone sqlite install — no
+ * host models, no product_id anywhere.
  */
 final class CommerceFacadeEndToEndTest extends TestCase
 {
+    use ConfiguresCommerceModels;
+
     protected function setUp(): void
     {
         parent::setUp();
 
-        config([
-            'commerce.models.user' => FakeUser::class,
-            'commerce.models.order' => Order::class,
-            'commerce.models.order_item' => OrderItem::class,
-            'commerce.models.order_return' => OrderReturn::class,
-            'commerce.models.order_total' => OrderTotal::class,
-            'commerce.models.invoice' => Invoice::class,
-            'commerce.models.payment' => Payment::class,
-            'commerce.models.transaction' => Transaction::class,
-            'commerce.models.discount' => Discount::class,
-            'commerce.models.wallet' => Wallet::class,
-            'commerce.models.wallet_transaction' => WalletTransaction::class,
-            'commerce.models.shipping_method' => ShippingMethod::class,
-            'commerce.models.payment_method' => PaymentMethod::class,
-            'commerce.models.product' => FakeUser::class,
-            'commerce.models.campaign' => FakeUser::class,
-            'commerce.models.address' => FakeUser::class,
-        ]);
+        $this->configureCommerceModels();
 
         $this->artisan('migrate', ['--force' => true]);
     }
@@ -70,68 +54,70 @@ final class CommerceFacadeEndToEndTest extends TestCase
         $userId = 9001;
         $branchId = 3;
 
-        $itemSnapshot = [
-            'title' => 'Coffee Beans 1kg',
-            'sku' => 'COF-1KG',
-            'price_source' => 'user_group',
-            'campaign_id' => null,
-        ];
-
         Commerce::cart()
             ->forUser($userId)
             ->branchId($branchId)
-            ->addItem(
-                productId: 501,
+            ->addLine(
+                itemType: 'shop.product',
+                name: 'Coffee Beans 1kg',
                 quantity: 2,
                 unitPrice: 1_000_000,
-                extra: $itemSnapshot,
+                itemId: 501,
+                sku: 'COF-1KG',
+                uomCode: 'kg',
             );
 
-        $cartItems = Commerce::cart()->forUser($userId)->items();
-        $this->assertCount(1, $cartItems);
-        $this->assertSame('Coffee Beans 1kg', $cartItems->first()->extra_attributes['title']);
+        $cartLines = Commerce::cart()->forUser($userId)->items();
+        $this->assertCount(1, $cartLines);
+        $this->assertSame('Coffee Beans 1kg', $cartLines->first()->item_name);
+        $this->assertSame('shop.product', $cartLines->first()->item_type);
+        $this->assertSame(501, $cartLines->first()->item_id);
 
-        $order = Commerce::checkout()
+        $result = Commerce::checkout()
             ->forUser($userId)
             ->branchId($branchId)
             ->shippingAmount(50_000)
             ->idempotencyKey('checkout:user:9001:cart:active')
-            ->place();
+            ->finalize();
+
+        $this->assertInstanceOf(CheckoutResult::class, $result);
+        $order = $result->order;
+        $invoice = $result->invoice;
 
         $this->assertInstanceOf(Order::class, $order);
+        $this->assertInstanceOf(Invoice::class, $invoice);
         $this->assertSame(OrderStatusEnum::PENDING, $order->status);
         $this->assertSame($branchId, $order->branch_id);
-        $this->assertSame(2_050_000.0, (float) $order->total); // 2 * 1,000,000 + 50,000 shipping
+        $this->assertSame(2_050_000, (int) $order->total_amount); // 2 * 1,000,000 + 50,000 shipping
+        $this->assertSame((int) $order->total_amount, (int) $invoice->amount, 'The mandatory invoice must mirror the order total.');
+        $this->assertSame($order->id, $invoice->order_id);
 
         Event::assertDispatched(OrderCreated::class, function (OrderCreated $event) use ($order): bool {
             return (string) $event->orderId === (string) $order->id;
         });
+        Event::assertDispatched(InvoiceIssued::class, function (InvoiceIssued $event) use ($invoice): bool {
+            return (string) $event->invoiceId === (string) $invoice->id;
+        });
 
-        // Cart items are attached to the order, not left dangling.
-        $this->assertSame(0, OrderItem::query()->carts()->where('user_id', $userId)->count());
-        $this->assertSame(1, OrderItem::query()->where('order_id', $order->id)->count());
-
-        $invoice = Commerce::checkout()->forOrder($order)->createInvoice(invoiceNumber: 'INV-1');
-
-        $this->assertInstanceOf(Invoice::class, $invoice);
-        $this->assertSame('INV-1', $invoice->invoice_number);
-        $this->assertSame($order->id, $invoice->order_id);
+        // Cart lines are attached to the order, not left dangling.
+        $this->assertSame(0, OrderLine::query()->carts()->where('user_id', $userId)->count());
+        $this->assertSame(1, OrderLine::query()->where('order_id', $order->id)->count());
 
         $paymentMethod = PaymentMethod::query()->create(['provider' => 'zarinpal', 'published' => true]);
 
-        $payment = Commerce::payment()
-            ->forOrder($order)
+        $payment = Commerce::payments()
             ->forInvoice($invoice)
+            ->forOrder($order)
             ->methodId($paymentMethod->id)
             ->type(PaymentTypeEnum::ONLINE)
-            ->amount((int) $order->total)
-            ->idempotencyKey('pay:order:'.$order->id.':attempt:1')
+            ->amount((int) $invoice->amount)
+            ->idempotencyKey('pay:invoice:'.$invoice->id.':attempt:1')
             ->initiate();
 
-        $this->assertInstanceOf(Payment::class, $payment);
         $this->assertSame(PaymentStatusEnum::PENDING, $payment->status);
+        $this->assertSame($invoice->id, $payment->invoice_id);
 
-        $confirmed = Commerce::payment()->confirm(
+        $confirmed = Commerce::payments()->confirm(
             payment: $payment,
             gateway: 'zarinpal',
             refId: 'REF-123',
@@ -147,7 +133,7 @@ final class CommerceFacadeEndToEndTest extends TestCase
 
         $this->assertSame(OrderStatusEnum::PAID, $order->status);
         $this->assertSame('paid', $invoice->status);
-        $this->assertSame(1, Transaction::query()->where('order_id', $order->id)->where('tracking_code', 'TRK-777')->count());
+        $this->assertSame(1, Transaction::query()->where('payment_id', $payment->id)->where('tracking_code', 'TRK-777')->count());
 
         Event::assertDispatched(OrderPaid::class, function (OrderPaid $event) use ($order): bool {
             return (string) $event->orderId === (string) $order->id;
@@ -155,8 +141,11 @@ final class CommerceFacadeEndToEndTest extends TestCase
         Event::assertDispatched(InvoiceFullyPaid::class, function (InvoiceFullyPaid $event) use ($invoice): bool {
             return (string) $event->invoiceId === (string) $invoice->id;
         });
+        Event::assertDispatched(PaymentConfirmed::class, function (PaymentConfirmed $event) use ($payment): bool {
+            return (string) $event->paymentId === (string) $payment->id;
+        });
 
-        // Partial refund to wallet.
+        // Partial refund to wallet (legacy amount-only flow).
         $orderReturn = Commerce::refund()
             ->forOrder($order)
             ->amount(1_000_000)
@@ -167,7 +156,7 @@ final class CommerceFacadeEndToEndTest extends TestCase
 
         $this->assertInstanceOf(OrderReturn::class, $orderReturn);
         $this->assertSame($order->id, $orderReturn->order_id);
-        $this->assertSame(1_000_000.0, (float) $orderReturn->amount);
+        $this->assertSame(1_000_000, (int) $orderReturn->total_amount);
 
         $order->refresh();
         $this->assertSame(OrderStatusEnum::PAID, $order->status, 'Partial refund must not flip the order to REFUNDED.');
@@ -187,52 +176,66 @@ final class CommerceFacadeEndToEndTest extends TestCase
         });
     }
 
-    public function test_place_throws_when_cart_is_empty(): void
+    public function test_finalize_throws_when_cart_is_empty(): void
     {
         $this->expectException(CannotCheckoutEmptyCart::class);
 
-        Commerce::checkout()->forUser(4242)->place();
+        Commerce::checkout()->forUser(4242)->finalize();
     }
 
-    public function test_place_is_idempotent_for_retries_with_the_same_key(): void
+    public function test_place_is_an_alias_for_finalize(): void
     {
         $userId = 1;
 
-        Commerce::cart()->forUser($userId)->addItem(productId: 1, quantity: 1, unitPrice: 100_000);
+        Commerce::cart()->forUser($userId)->addLine(itemType: 'shop.product', name: 'Widget', quantity: 1, unitPrice: 100_000, itemId: 1);
 
-        $first = Commerce::checkout()->forUser($userId)->idempotencyKey('checkout:retry')->place();
-        $second = Commerce::checkout()->forUser($userId)->idempotencyKey('checkout:retry')->place();
+        $result = Commerce::checkout()->forUser($userId)->place();
 
-        $this->assertSame($first->id, $second->id);
-        $this->assertSame(1, OrderItem::query()->where('order_id', $first->id)->count());
-        $this->assertSame(1, Order::query()->count());
+        $this->assertInstanceOf(CheckoutResult::class, $result);
+        $this->assertSame(100_000, (int) $result->order->total_amount);
     }
 
-    public function test_place_throws_idempotency_conflict_for_a_different_user_with_the_same_key(): void
+    public function test_finalize_is_idempotent_for_retries_with_the_same_key(): void
     {
-        Commerce::cart()->forUser(1)->addItem(productId: 1, quantity: 1, unitPrice: 100_000);
-        Commerce::checkout()->forUser(1)->idempotencyKey('checkout:shared')->place();
+        $userId = 1;
 
-        Commerce::cart()->forUser(2)->addItem(productId: 1, quantity: 1, unitPrice: 100_000);
+        Commerce::cart()->forUser($userId)->addLine(itemType: 'shop.product', name: 'Widget', quantity: 1, unitPrice: 100_000, itemId: 1);
+
+        $first = Commerce::checkout()->forUser($userId)->idempotencyKey('checkout:retry')->finalize();
+        $second = Commerce::checkout()->forUser($userId)->idempotencyKey('checkout:retry')->finalize();
+
+        $this->assertSame($first->order->id, $second->order->id);
+        $this->assertSame($first->invoice->id, $second->invoice->id);
+        $this->assertSame(1, OrderLine::query()->where('order_id', $first->order->id)->count());
+        $this->assertSame(1, Order::query()->count());
+        $this->assertSame(1, Invoice::query()->count());
+    }
+
+    public function test_finalize_throws_idempotency_conflict_for_a_different_user_with_the_same_key(): void
+    {
+        Commerce::cart()->forUser(1)->addLine(itemType: 'shop.product', name: 'Widget', quantity: 1, unitPrice: 100_000, itemId: 1);
+        Commerce::checkout()->forUser(1)->idempotencyKey('checkout:shared')->finalize();
+
+        Commerce::cart()->forUser(2)->addLine(itemType: 'shop.product', name: 'Widget', quantity: 1, unitPrice: 100_000, itemId: 1);
 
         $this->expectException(IdempotencyConflict::class);
 
-        Commerce::checkout()->forUser(2)->idempotencyKey('checkout:shared')->place();
+        Commerce::checkout()->forUser(2)->idempotencyKey('checkout:shared')->finalize();
     }
 
     public function test_confirm_is_idempotent_for_retries_with_the_same_tracking_code(): void
     {
         $userId = 1;
-        Commerce::cart()->forUser($userId)->addItem(productId: 1, quantity: 1, unitPrice: 100_000);
-        $order = Commerce::checkout()->forUser($userId)->place();
+        Commerce::cart()->forUser($userId)->addLine(itemType: 'shop.product', name: 'Widget', quantity: 1, unitPrice: 100_000, itemId: 1);
+        $result = Commerce::checkout()->forUser($userId)->finalize();
 
-        $payment = Commerce::payment()->forOrder($order)->amount((int) $order->total)->initiate();
+        $payment = Commerce::payments()->forInvoice($result->invoice)->amount((int) $result->invoice->amount)->initiate();
 
-        $first = Commerce::payment()->confirm($payment, gateway: 'zarinpal', trackingCode: 'TRK-SAME');
-        $second = Commerce::payment()->confirm($payment, gateway: 'zarinpal', trackingCode: 'TRK-SAME');
+        $first = Commerce::payments()->confirm($payment, gateway: 'zarinpal', trackingCode: 'TRK-SAME');
+        $second = Commerce::payments()->confirm($payment, gateway: 'zarinpal', trackingCode: 'TRK-SAME');
 
         $this->assertSame(PaymentStatusEnum::PAID, $first->status);
         $this->assertSame(PaymentStatusEnum::PAID, $second->status);
-        $this->assertSame(1, Transaction::query()->where('order_id', $order->id)->count());
+        $this->assertSame(1, Transaction::query()->where('payment_id', $payment->id)->count());
     }
 }

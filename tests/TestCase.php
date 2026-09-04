@@ -28,7 +28,10 @@ abstract class TestCase extends Orchestra
             'foreign_key_constraints' => true,
         ]);
         $app['config']->set('cache.default', 'array');
-        $app['config']->set('commerce.tables.prefix', '');
+        // Intentionally left at the real default (`com_`, see config/commerce.php)
+        // so the whole suite exercises the package's actual table-prefix
+        // behaviour; MigrationsInstallStandaloneTest additionally proves a
+        // custom prefix works end-to-end.
         $app['config']->set('app.locale', 'en');
         $app['config']->set('app.fallback_locale', 'en');
     }

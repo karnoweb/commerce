@@ -15,13 +15,13 @@ namespace Karnoweb\Commerce\Events;
 final readonly class ReturnCreated
 {
     /**
-     * @param  list<array{orderItemId: int|string, quantity: int, amount: int|float}>  $items
+     * @param  list<array{orderLineId: int|string, quantity: int|float, amount: int|float}>  $lines
      */
     public function __construct(
         public int|string $orderId,
         public int|string $orderReturnId,
         public int|float $totalAmount,
-        public array $items = [],
+        public array $lines = [],
         public int|string|null $userId = null,
     ) {}
 }

@@ -14,26 +14,27 @@ use Karnoweb\Commerce\Services\PaymentService;
 
 /**
  * Fluent entry point for the payment lifecycle: initiate() records a
- * PENDING payment; confirm() records a gateway outcome the host already
- * obtained (Commerce never calls a gateway itself).
+ * PENDING payment against an invoice (invoice is mandatory — payments
+ * always settle a bill); confirm() records a gateway outcome the host
+ * already obtained (Commerce never calls a gateway itself).
  *
  * @example
- * $payment = Commerce::payment()
- *     ->forOrder($order)
+ * $payment = Commerce::payments()
  *     ->forInvoice($invoice)
+ *     ->forOrder($order)
  *     ->methodId(1)
  *     ->type(PaymentTypeEnum::ONLINE)
- *     ->amount((int) $order->total)
- *     ->idempotencyKey('pay:order:'.$order->id.':attempt:1')
+ *     ->amount((int) $invoice->amount)
+ *     ->idempotencyKey('pay:invoice:'.$invoice->id.':attempt:1')
  *     ->initiate();
  *
- * Commerce::payment()->confirm(payment: $payment, gateway: 'zarinpal', refId: 'REF-123');
+ * Commerce::payments()->confirm(payment: $payment, gateway: 'zarinpal', refId: 'REF-123');
  */
 class PaymentBuilder
 {
-    private ?Order $order = null;
-
     private ?Invoice $invoice = null;
+
+    private ?Order $order = null;
 
     private int|string|null $methodId = null;
 
@@ -45,16 +46,18 @@ class PaymentBuilder
 
     public function __construct(private readonly PaymentService $paymentService) {}
 
-    public function forOrder(Order $order): self
+    /** Required before initiate() — a payment always settles an invoice. */
+    public function forInvoice(Invoice $invoice): self
     {
-        $this->order = $order;
+        $this->invoice = $invoice;
 
         return $this;
     }
 
-    public function forInvoice(Invoice $invoice): self
+    /** Optional denormalized order link (null for a standalone-invoice payment). */
+    public function forOrder(Order $order): self
     {
-        $this->invoice = $invoice;
+        $this->order = $order;
 
         return $this;
     }
@@ -94,13 +97,13 @@ class PaymentBuilder
      */
     public function initiate(): Payment
     {
-        if ($this->order === null || $this->amount === null) {
-            throw new InvalidArgumentException('PaymentBuilder::initiate() requires forOrder() and amount() before use.');
+        if ($this->invoice === null || $this->amount === null) {
+            throw new InvalidArgumentException('PaymentBuilder::initiate() requires forInvoice() and amount() before use.');
         }
 
         return $this->paymentService->initiate(
-            $this->order,
             $this->invoice,
+            $this->order,
             $this->methodId,
             $this->type,
             $this->amount,

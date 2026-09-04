@@ -12,6 +12,7 @@ use Karnoweb\Commerce\Enums\PaymentStatusEnum;
 use Karnoweb\Commerce\Enums\PaymentTypeEnum;
 use Karnoweb\Commerce\Events\InvoiceFullyPaid;
 use Karnoweb\Commerce\Events\OrderPaid;
+use Karnoweb\Commerce\Events\PaymentConfirmed;
 use Karnoweb\Commerce\Events\PaymentInitiated;
 use Karnoweb\Commerce\Exceptions\CannotConfirmAlreadyPaidPayment;
 use Karnoweb\Commerce\Exceptions\CannotPayCancelledOrder;
@@ -25,60 +26,66 @@ use Karnoweb\Commerce\Support\ResolvesConfiguredModels;
 /**
  * Canonical payment lifecycle: initiate (PENDING) then confirm (PAID).
  * Commerce never talks to a gateway — the host does that and reports the
- * outcome back here via confirm().
+ * outcome back here via confirm(). A payment always settles an Invoice
+ * (invoice_id required); $order is an optional denormalized convenience —
+ * standalone-invoice payments pass null.
  */
 class PaymentService
 {
     use ResolvesConfiguredModels;
 
     /**
-     * Create a PENDING payment for an order (optionally tied to an invoice).
+     * Create a PENDING payment against an invoice (optionally order-bound).
      *
      * @throws CannotPayCancelledOrder
      * @throws IdempotencyConflict
      */
     public function initiate(
-        Order $order,
-        ?Invoice $invoice,
+        Invoice $invoice,
+        ?Order $order,
         int|string|null $paymentMethodId,
         PaymentTypeEnum|string $type,
         int|float $amount,
         ?string $idempotencyKey = null,
     ): Payment {
-        return DB::transaction(function () use ($order, $invoice, $paymentMethodId, $type, $amount, $idempotencyKey): Payment {
+        return DB::transaction(function () use ($invoice, $order, $paymentMethodId, $type, $amount, $idempotencyKey): Payment {
             if ($idempotencyKey !== null) {
                 $existing = $this->findPaymentByIdempotencyKey($idempotencyKey);
 
                 if ($existing !== null) {
-                    $this->assertSameInitiatePayload($existing, $order, $amount, $idempotencyKey);
+                    $this->assertSameInitiatePayload($existing, $invoice, $amount, $idempotencyKey);
 
                     return $existing;
                 }
             }
 
-            if ($order->status === OrderStatusEnum::CANCELLED) {
+            if ($order !== null && $order->status === OrderStatusEnum::CANCELLED) {
                 throw new CannotPayCancelledOrder($order->id);
             }
 
+            $amountInt = (int) round($amount);
+
             $paymentClass = static::model('payment');
 
+            /** @var Payment $payment */
             $payment = $paymentClass::create([
-                'user_id' => $order->user_id,
-                'branch_id' => $order->branch_id ?? null,
-                'order_id' => $order->id,
-                'invoice_id' => $invoice?->id,
                 'idempotency_key' => $idempotencyKey,
+                'invoice_id' => $invoice->id,
+                'order_id' => $order?->id ?? $invoice->order_id,
+                'user_id' => $order?->user_id ?? $invoice->user_id,
+                'branch_id' => $order?->branch_id ?? $invoice->branch_id,
                 'payment_method_id' => $paymentMethodId,
-                'amount' => $amount,
+                'amount' => $amountInt,
                 'type' => $type instanceof PaymentTypeEnum ? $type : PaymentTypeEnum::from($type),
                 'status' => PaymentStatusEnum::PENDING,
             ]);
 
             CommerceEventDispatcher::dispatch(new PaymentInitiated(
-                orderId: $order->id,
                 paymentId: $payment->id,
-                amount: $amount,
-                userId: $order->user_id,
+                invoiceId: $invoice->id,
+                orderId: $payment->order_id,
+                amount: $amountInt,
+                userId: $payment->user_id,
             ));
 
             return $payment;
@@ -87,8 +94,9 @@ class PaymentService
 
     /**
      * Record a gateway outcome reported by the host: PENDING -> PAID.
-     * Creates a Transaction, marks the order PAID and the invoice `paid`,
-     * then dispatches OrderPaid + InvoiceFullyPaid after commit.
+     * Creates a Transaction (payment_id-keyed), marks the order PAID (if
+     * order-bound) and the invoice `paid`, then dispatches PaymentConfirmed
+     * (+ OrderPaid/InvoiceFullyPaid) after commit.
      *
      * Safe to call twice with the same $trackingCode (no duplicate
      * Transaction is created); calling it again with a *different*
@@ -113,36 +121,24 @@ class PaymentService
             if ($payment->status === PaymentStatusEnum::PAID) {
                 $existingTransaction = $this->findTransactionByTrackingCode($trackingCode);
 
-                if ($existingTransaction !== null && (string) $existingTransaction->order_id === (string) $payment->order_id) {
+                if ($existingTransaction !== null && (string) $existingTransaction->payment_id === (string) $payment->id) {
                     return $payment;
                 }
 
                 throw new CannotConfirmAlreadyPaidPayment($payment->id);
             }
 
-            $payment->update([
-                'status' => PaymentStatusEnum::PAID,
-                'extra_attributes' => array_merge($payment->extra_attributes ?? [], [
-                    'gateway' => $gateway,
-                    'ref_id' => $refId,
-                    'tracking_code' => $trackingCode,
-                ]),
-            ]);
+            $payment->update(['status' => PaymentStatusEnum::PAID]);
 
             $transactionClass = static::model('transaction');
 
             $transactionClass::create([
-                'user_id' => $payment->user_id,
-                'payment_method_id' => $payment->payment_method_id,
-                'order_id' => $payment->order_id,
-                'type' => 'payment',
-                'amount' => $payment->amount,
-                'status' => 'paid',
+                'payment_id' => $payment->id,
+                'gateway' => $gateway,
                 'ref_id' => $refId,
                 'tracking_code' => $trackingCode,
                 'gateway_response' => $gatewayPayload,
                 'paid_at' => $paidAt ?? now(),
-                'extra_attributes' => ['gateway' => $gateway],
             ]);
 
             $order = $payment->order_id !== null ? static::model('order')::find($payment->order_id) : null;
@@ -156,7 +152,7 @@ class PaymentService
                 ));
             }
 
-            $invoice = $payment->invoice_id !== null ? static::model('invoice')::find($payment->invoice_id) : null;
+            $invoice = static::model('invoice')::find($payment->invoice_id);
 
             if ($invoice !== null) {
                 $invoice->update(['status' => 'paid']);
@@ -166,6 +162,14 @@ class PaymentService
                     orderId: $invoice->order_id,
                 ));
             }
+
+            CommerceEventDispatcher::dispatch(new PaymentConfirmed(
+                paymentId: $payment->id,
+                invoiceId: $payment->invoice_id,
+                orderId: $payment->order_id,
+                amount: $payment->amount,
+                userId: $payment->user_id,
+            ));
 
             return $payment->refresh();
         });
@@ -178,12 +182,12 @@ class PaymentService
         return $paymentClass::query()->where('idempotency_key', $key)->first();
     }
 
-    private function assertSameInitiatePayload(Payment $existing, Order $order, int|float $amount, string $idempotencyKey): void
+    private function assertSameInitiatePayload(Payment $existing, Invoice $invoice, int|float $amount, string $idempotencyKey): void
     {
-        $sameOrder = (string) $existing->order_id === (string) $order->id;
-        $sameAmount = (float) $existing->amount === (float) $amount;
+        $sameInvoice = (string) $existing->invoice_id === (string) $invoice->id;
+        $sameAmount = (int) $existing->amount === (int) round($amount);
 
-        if (! $sameOrder || ! $sameAmount) {
+        if (! $sameInvoice || ! $sameAmount) {
             throw new IdempotencyConflict($idempotencyKey);
         }
     }

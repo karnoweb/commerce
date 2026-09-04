@@ -59,8 +59,8 @@ class RefundBuilder
         return $this;
     }
 
-    /** Credit the refunded amount to this owner's wallet when process() runs. */
-    public function toWallet(int|string $userId, int|string $branchId): self
+    /** Credit the refunded amount to this owner's wallet when process() runs. $branchId defaults to 0 ("global"). */
+    public function toWallet(int|string $userId, int|string $branchId = 0): self
     {
         $this->toWallet = ['user_id' => $userId, 'branch_id' => $branchId];
 

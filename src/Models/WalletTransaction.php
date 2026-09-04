@@ -10,14 +10,12 @@ use Illuminate\Database\Eloquent\Relations\MorphTo;
 class WalletTransaction extends BaseModel
 {
     protected $fillable = [
-        'transaction_id',
         'causer_id',
         'wallet_id',
         'amount',
         'sign',
         'type',
         'description',
-        'reference',
         'idempotency_key',
         'published',
         'transactionable_id',

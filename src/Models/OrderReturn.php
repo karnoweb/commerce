@@ -14,21 +14,17 @@ class OrderReturn extends BaseModel
 
     protected $fillable = [
         'order_id',
-        'user_id',
-        'amount',
-        'tax_amount',
-        'discount_amount',
-        'reason',
         'idempotency_key',
-        'document_id',
+        'total_amount',
+        'reason',
+        'extra_attributes',
     ];
 
     protected function casts(): array
     {
         return [
-            'amount' => 'float',
-            'tax_amount' => 'float',
-            'discount_amount' => 'float',
+            'total_amount' => 'integer',
+            'extra_attributes' => 'array',
         ];
     }
 
@@ -37,17 +33,12 @@ class OrderReturn extends BaseModel
         return $this->belongsTo(config('commerce.models.order', Order::class));
     }
 
-    public function user(): BelongsTo
-    {
-        return $this->belongsTo(config('commerce.models.user'));
-    }
-
     /**
-     * Quantity-based return lines created via ReturnService — empty for
-     * legacy amount-only refunds created via RefundService.
+     * Quantity-based return lines created via ReturnService — empty for a
+     * legacy amount-only refund created via RefundService.
      */
-    public function items(): HasMany
+    public function lines(): HasMany
     {
-        return $this->hasMany(config('commerce.models.order_return_item', OrderReturnItem::class));
+        return $this->hasMany(config('commerce.models.order_return_line', OrderReturnLine::class));
     }
 }

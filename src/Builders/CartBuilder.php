@@ -6,20 +6,25 @@ namespace Karnoweb\Commerce\Builders;
 
 use Illuminate\Database\Eloquent\Collection;
 use InvalidArgumentException;
-use Karnoweb\Commerce\DTOs\CartItemInput;
 use Karnoweb\Commerce\DTOs\LineItemInput;
-use Karnoweb\Commerce\Enums\LineItemTypeEnum;
-use Karnoweb\Commerce\Models\OrderItem;
+use Karnoweb\Commerce\Models\OrderLine;
 use Karnoweb\Commerce\Services\CartService;
 
 /**
- * Fluent entry point for building a user's cart.
+ * Fluent entry point for building a user's cart. Every line is generic:
+ * itemType (a free-form string key such as 'shop.product', 'custom.text',
+ * 'custom.service', or anything the host defines) + an optional itemId +
+ * a required itemName snapshot. There is no product_id anywhere, and no
+ * per-line tax/discount column — lineTotal is simply quantity x unitPrice.
  *
  * @example
  * Commerce::cart()
  *     ->forUser($userId)
  *     ->branchId($branchId)
- *     ->addItem(productId: 501, quantity: 2, unitPrice: 1_000_000, extra: [...]);
+ *     ->salesUnitId($salesUnitId)
+ *     ->warehouseId($warehouseId)
+ *     ->addLine(itemType: 'shop.product', name: 'Coffee Beans 1kg', quantity: 2, unitPrice: 1_000_000, itemId: 501, sku: 'COF-1KG', uomCode: 'kg')
+ *     ->addLine(itemType: 'custom.text', name: 'Special packaging', quantity: 1, unitPrice: 50_000);
  */
 class CartBuilder
 {
@@ -27,9 +32,12 @@ class CartBuilder
 
     private int|string|null $branchId = null;
 
+    /** @var array<string, mixed> Reporting dimensions (document_dimensions rows) applied to every line added afterward. */
+    private array $dimensions = [];
+
     public function __construct(private readonly CartService $cartService) {}
 
-    /** Set the cart owner. Required before addItem()/items()/clear(). */
+    /** Set the cart owner. Required before addLine()/items()/clear(). */
     public function forUser(int|string $userId): self
     {
         $this->userId = $userId;
@@ -37,7 +45,7 @@ class CartBuilder
         return $this;
     }
 
-    /** Optional branch context, snapshotted onto each added item's extra_attributes. */
+    /** Optional branch context, applied to every line added afterward. */
     public function branchId(int|string $branchId): self
     {
         $this->branchId = $branchId;
@@ -45,164 +53,141 @@ class CartBuilder
         return $this;
     }
 
-    /**
-     * Add a line to the cart (an OrderItem with order_id = null). $productId
-     * is a soft reference to the product catalog — no shop model dependency.
-     *
-     * @param  array<string, mixed>  $extra  Arbitrary snapshot (title, sku, price_source, ...).
-     */
-    public function addItem(
-        int|string $productId,
-        int $quantity,
-        int|float $unitPrice,
-        array $extra = [],
-        int|string|null $campaignId = null,
-        int|float $taxAmount = 0,
-        int|float $discountAmount = 0,
-    ): self {
-        $this->assertUser();
+    /** Reporting dimension (which sales unit sold this) — writes a document_dimensions row for every line added afterward. */
+    public function salesUnitId(int|string $salesUnitId): self
+    {
+        $this->dimensions['sales_unit_id'] = $salesUnitId;
 
-        $this->cartService->addItem(
-            $this->userId,
-            new CartItemInput(
-                productId: $productId,
-                quantity: $quantity,
-                unitPrice: $unitPrice,
-                extra: $extra,
-                campaignId: $campaignId,
-                taxAmount: $taxAmount,
-                discountAmount: $discountAmount,
-            ),
-            $this->branchId,
-        );
+        return $this;
+    }
+
+    /** Reporting dimension (which warehouse is involved) — writes a document_dimensions row for every line added afterward. */
+    public function warehouseId(int|string $warehouseId): self
+    {
+        $this->dimensions['warehouse_id'] = $warehouseId;
+
+        return $this;
+    }
+
+    /** Arbitrary reporting dimension (region_id, channel_id, cashier_id, ...), applied to every line added afterward. */
+    public function addDimension(string $key, mixed $value): self
+    {
+        $this->dimensions[$key] = $value;
 
         return $this;
     }
 
     /**
-     * Add a product line to the cart — a soft reference to the catalog
-     * (no shop model dependency). $sku/$title are convenience overrides
-     * merged on top of $extra; equivalent to putting 'sku'/'title' keys
-     * directly in $extra.
+     * Add a generic line to the cart (an OrderLine with order_id = null).
+     * $itemType is a free-form string the host defines; $itemId is a soft,
+     * nullable reference (no FK) — $name is the required snapshot.
      *
-     * @param  array<string, mixed>  $extra  Arbitrary snapshot (price_source, ...).
+     * @param  array<string, mixed>  $extra  Arbitrary snapshot data.
      */
-    public function addProductItem(
-        int|string $productId,
-        int $quantity,
+    public function addLine(
+        string $itemType,
+        string $name,
+        int|float $quantity,
         int|float $unitPrice,
-        array $extra = [],
+        int|string|null $itemId = null,
         ?string $sku = null,
-        ?string $title = null,
+        ?string $uomCode = null,
+        array $extra = [],
+        ?string $expiresAt = null,
     ): self {
         $this->assertUser();
 
-        if ($sku !== null) {
-            $extra['sku'] = $sku;
-        }
-
-        $this->cartService->addLine(
-            $this->userId,
-            new LineItemInput(
-                type: LineItemTypeEnum::PRODUCT,
-                quantity: $quantity,
-                unitPrice: $unitPrice,
-                title: $title,
-                productId: $productId,
-                extra: $extra,
-            ),
-            $this->branchId,
-        );
+        $this->cartService->addLine($this->userId, new LineItemInput(
+            itemType: $itemType,
+            itemName: $name,
+            quantity: $quantity,
+            unitPrice: $unitPrice,
+            itemId: $itemId,
+            itemSku: $sku,
+            uomCode: $uomCode,
+            branchId: $this->branchId,
+            expiresAt: $expiresAt,
+            extra: $extra,
+            dimensions: $this->dimensions,
+        ));
 
         return $this;
     }
 
     /**
-     * Add a catalog-free service line (installation, labor, ...): just a
-     * title, quantity, and unit price — no product_id.
+     * @deprecated Prefer addLine(itemType: 'shop.product', ...). Kept as a
+     *             thin alias — calls addLine() under the hood.
      *
      * @param  array<string, mixed>  $extra
      */
-    public function addServiceItem(string $title, int $quantity, int|float $unitPrice, array $extra = []): self
-    {
-        $this->assertUser();
-
-        $this->cartService->addLine(
-            $this->userId,
-            new LineItemInput(
-                type: LineItemTypeEnum::SERVICE,
-                quantity: $quantity,
-                unitPrice: $unitPrice,
-                title: $title,
-                extra: $extra,
-            ),
-            $this->branchId,
+    public function addProductItem(
+        int|string $itemId,
+        string $name,
+        int|float $quantity,
+        int|float $unitPrice,
+        ?string $sku = null,
+        array $extra = [],
+    ): self {
+        return $this->addLine(
+            itemType: 'shop.product',
+            name: $name,
+            quantity: $quantity,
+            unitPrice: $unitPrice,
+            itemId: $itemId,
+            sku: $sku,
+            extra: $extra,
         );
-
-        return $this;
     }
 
     /**
-     * Add a catalog-free text/fee line (packaging, glass breakage, ...).
-     * Quantity defaults to 1 and unitPrice defaults to $amount.
+     * @deprecated Prefer addLine(itemType: 'custom.service', ...). Kept as
+     *             a thin alias — calls addLine() under the hood.
+     *
+     * @param  array<string, mixed>  $extra
+     */
+    public function addServiceItem(string $name, int|float $quantity, int|float $unitPrice, array $extra = []): self
+    {
+        return $this->addLine(itemType: 'custom.service', name: $name, quantity: $quantity, unitPrice: $unitPrice, extra: $extra);
+    }
+
+    /**
+     * @deprecated Prefer addLine(itemType: 'custom.text', ...). Kept as a
+     *             thin alias — calls addLine() under the hood. Quantity
+     *             defaults to 1 and unitPrice defaults to $amount.
      *
      * @param  array<string, mixed>  $extra
      */
     public function addTextItem(string $description, int|float $amount, array $extra = []): self
     {
-        $this->assertUser();
-
-        $this->cartService->addLine(
-            $this->userId,
-            new LineItemInput(
-                type: LineItemTypeEnum::TEXT,
-                quantity: 1,
-                unitPrice: $amount,
-                title: $description,
-                extra: $extra,
-            ),
-            $this->branchId,
-        );
-
-        return $this;
+        return $this->addLine(itemType: 'custom.text', name: $description, quantity: 1, unitPrice: $amount, extra: $extra);
     }
 
     /**
-     * Add a host-defined polymorphic line via an optional
-     * itemableType/itemableId pair (e.g. a bundle, a gift card, a
-     * warranty add-on) — no product_id, no shop model dependency.
+     * @deprecated Prefer addLine(itemType: '<your own key>', ...). Kept as
+     *             a thin alias — calls addLine() under the hood.
      *
      * @param  array<string, mixed>  $extra
      */
     public function addCustomItem(
-        ?string $itemableType,
-        int|string|null $itemableId,
-        string $title,
-        int $quantity,
+        ?string $itemType,
+        int|string|null $itemId,
+        string $name,
+        int|float $quantity,
         int|float $unitPrice,
         array $extra = [],
     ): self {
-        $this->assertUser();
-
-        $this->cartService->addLine(
-            $this->userId,
-            new LineItemInput(
-                type: LineItemTypeEnum::CUSTOM,
-                quantity: $quantity,
-                unitPrice: $unitPrice,
-                title: $title,
-                itemableType: $itemableType,
-                itemableId: $itemableId,
-                extra: $extra,
-            ),
-            $this->branchId,
+        return $this->addLine(
+            itemType: $itemType ?? 'custom.item',
+            name: $name,
+            quantity: $quantity,
+            unitPrice: $unitPrice,
+            itemId: $itemId,
+            extra: $extra,
         );
-
-        return $this;
     }
 
     /**
-     * @return Collection<int, OrderItem>
+     * @return Collection<int, OrderLine>
      */
     public function items(): Collection
     {

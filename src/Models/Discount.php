@@ -30,8 +30,8 @@ class Discount extends BaseModel
         return [
             'type' => DiscountTypeEnum::class,
             'value' => 'float',
-            'min_order_amount' => 'float',
-            'max_discount_amount' => 'float',
+            'min_order_amount' => 'integer',
+            'max_discount_amount' => 'integer',
             'usage_limit' => 'integer',
             'usage_per_user' => 'integer',
             'used_count' => 'integer',

@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace Karnoweb\Commerce\Events;
 
 /**
- * @param int|string      $orderId
- * @param int|string|null $userId
+ * @param  int|string  $orderId
+ * @param  int|string|null  $userId
  */
 final readonly class OrderCreated
 {

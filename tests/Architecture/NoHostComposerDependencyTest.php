@@ -22,7 +22,7 @@ final class NoHostComposerDependencyTest extends TestCase
 
     public function test_composer_json_has_no_forbidden_direct_dependencies(): void
     {
-        $path = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'composer.json';
+        $path = dirname(__DIR__, 2).DIRECTORY_SEPARATOR.'composer.json';
         $this->assertFileExists($path);
 
         /** @var array{require?: array<string, string>, require-dev?: array<string, string>} $composer */
@@ -49,7 +49,7 @@ final class NoHostComposerDependencyTest extends TestCase
 
     public function test_composer_json_requires_only_illuminate_and_documented_support_packages(): void
     {
-        $path = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'composer.json';
+        $path = dirname(__DIR__, 2).DIRECTORY_SEPARATOR.'composer.json';
 
         /** @var array{require: array<string, string>} $composer */
         $composer = json_decode((string) file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);

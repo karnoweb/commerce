@@ -31,7 +31,8 @@ class WalletBuilder
 
     private ?string $ownerType = null;
 
-    private int|string|null $branchId = null;
+    /** @var int|string Convention: 0 = "global" (branch-agnostic) wallet — never null. */
+    private int|string $branchId = 0;
 
     private int|float|null $amount = null;
 
@@ -65,6 +66,7 @@ class WalletBuilder
         return $this;
     }
 
+    /** Optional — defaults to 0 ("global", branch-agnostic wallet) when never called. */
     public function branchId(int|string $branchId): self
     {
         $this->branchId = $branchId;
@@ -117,8 +119,8 @@ class WalletBuilder
      */
     public function save(): WalletTransaction
     {
-        if ($this->ownerId === null || $this->ownerType === null || $this->branchId === null || $this->amount === null) {
-            throw new InvalidArgumentException('WalletBuilder::save() requires forUser()/for(), branchId(), and credit()/debit() before use.');
+        if ($this->ownerId === null || $this->ownerType === null || $this->amount === null) {
+            throw new InvalidArgumentException('WalletBuilder::save() requires forUser()/for() and credit()/debit() before use.');
         }
 
         $arguments = [
