@@ -8,6 +8,7 @@ return [
         'order' => env('COMMERCE_ORDER_MODEL', 'App\\Models\\Order'),
         'order_item' => env('COMMERCE_ORDER_ITEM_MODEL', 'App\\Models\\OrderItem'),
         'order_return' => env('COMMERCE_ORDER_RETURN_MODEL', 'App\\Models\\OrderReturn'),
+        'order_return_item' => env('COMMERCE_ORDER_RETURN_ITEM_MODEL', 'App\\Models\\OrderReturnItem'),
         'order_total' => env('COMMERCE_ORDER_TOTAL_MODEL', 'App\\Models\\OrderTotal'),
         'invoice' => env('COMMERCE_INVOICE_MODEL', 'App\\Models\\Invoice'),
         'payment' => env('COMMERCE_PAYMENT_MODEL', 'App\\Models\\Payment'),

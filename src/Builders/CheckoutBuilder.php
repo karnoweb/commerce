@@ -34,9 +34,9 @@ class CheckoutBuilder
 
     private int|float $shippingAmount = 0;
 
-    private int|float $taxAmount = 0;
+    private int|float|null $taxAmount = null;
 
-    private int|float $discountAmount = 0;
+    private int|float|null $discountAmount = null;
 
     private ?string $orderNumber = null;
 
@@ -75,6 +75,7 @@ class CheckoutBuilder
         return $this;
     }
 
+    /** Explicit order-level tax. When omitted, the bound TaxCalculatorContract computes it (default: 0). */
     public function taxAmount(int|float $amount): self
     {
         $this->taxAmount = $amount;
@@ -82,6 +83,7 @@ class CheckoutBuilder
         return $this;
     }
 
+    /** Explicit order-level discount. When omitted, the bound DiscountCalculatorContract computes it (default: 0). */
     public function discountAmount(int|float $amount): self
     {
         $this->discountAmount = $amount;
@@ -120,8 +122,8 @@ class CheckoutBuilder
             'user_id' => $this->userId,
             'branch_id' => $this->branchId,
             'shipping_amount' => $this->shippingAmount,
-            'tax_amount' => $this->taxAmount,
-            'discount_amount' => $this->discountAmount,
+            ...($this->taxAmount !== null ? ['tax_amount' => $this->taxAmount] : []),
+            ...($this->discountAmount !== null ? ['discount_amount' => $this->discountAmount] : []),
             'order_number' => $this->orderNumber,
             'idempotency_key' => $this->idempotencyKey,
         ]);

@@ -9,11 +9,13 @@ use Karnoweb\Commerce\Builders\CartBuilder;
 use Karnoweb\Commerce\Builders\CheckoutBuilder;
 use Karnoweb\Commerce\Builders\PaymentBuilder;
 use Karnoweb\Commerce\Builders\RefundBuilder;
+use Karnoweb\Commerce\Builders\ReturnBuilder;
 use Karnoweb\Commerce\Builders\WalletBuilder;
 use Karnoweb\Commerce\Services\CartService;
 use Karnoweb\Commerce\Services\CheckoutService;
 use Karnoweb\Commerce\Services\PaymentService;
 use Karnoweb\Commerce\Services\RefundService;
+use Karnoweb\Commerce\Services\ReturnService;
 use Karnoweb\Commerce\Services\WalletService;
 use Karnoweb\Commerce\Support\ResolvesConfiguredModels;
 
@@ -28,6 +30,7 @@ class Commerce
         protected PaymentService $paymentService,
         protected RefundService $refundService,
         protected WalletService $walletService,
+        protected ReturnService $returnService,
     ) {}
 
     public function config(?string $key = null, mixed $default = null): mixed
@@ -77,5 +80,15 @@ class Commerce
     public function wallet(): WalletBuilder
     {
         return new WalletBuilder($this->walletService);
+    }
+
+    /**
+     * Fresh returns builder each call — quantity-based returns tied to
+     * original sale lines. Prefer this over refund() when you know which
+     * lines and how many units are coming back.
+     */
+    public function returns(): ReturnBuilder
+    {
+        return new ReturnBuilder($this->returnService);
     }
 }

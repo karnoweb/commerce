@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Karnoweb\Commerce\Models;
 
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
 class OrderReturn extends BaseModel
@@ -39,5 +40,14 @@ class OrderReturn extends BaseModel
     public function user(): BelongsTo
     {
         return $this->belongsTo(config('commerce.models.user'));
+    }
+
+    /**
+     * Quantity-based return lines created via ReturnService — empty for
+     * legacy amount-only refunds created via RefundService.
+     */
+    public function items(): HasMany
+    {
+        return $this->hasMany(config('commerce.models.order_return_item', OrderReturnItem::class));
     }
 }

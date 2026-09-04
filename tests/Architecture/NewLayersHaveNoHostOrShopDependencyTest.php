@@ -17,7 +17,7 @@ use Karnoweb\Commerce\Tests\TestCase;
 final class NewLayersHaveNoHostOrShopDependencyTest extends TestCase
 {
     /** @var list<string> */
-    private const DIRECTORIES = ['Builders', 'Services', 'DTOs'];
+    private const DIRECTORIES = ['Builders', 'Services', 'DTOs', 'Contracts'];
 
     public function test_new_layers_do_not_import_app_namespace(): void
     {

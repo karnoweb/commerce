@@ -11,5 +11,8 @@ return [
         'cannot_confirm_already_paid_payment' => 'Cannot confirm: this payment has already been paid.',
         'cannot_pay_cancelled_order' => 'Cannot initiate payment: this order has been cancelled.',
         'refund_amount_exceeds_paid_amount' => 'Refund amount (:requested) exceeds the amount available to refund (:available).',
+        'return_quantity_exceeds_available' => 'Return quantity (:requested) exceeds the quantity available to return (:available).',
+        'cannot_return_without_items' => 'Cannot create a return: at least one addItem() line is required.',
+        'return_item_not_found_in_order' => 'Order item [:item] does not belong to order [:order].',
     ],
 ];

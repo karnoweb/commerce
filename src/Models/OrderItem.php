@@ -7,6 +7,7 @@ namespace Karnoweb\Commerce\Models;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
+use Karnoweb\Commerce\Enums\LineItemTypeEnum;
 
 class OrderItem extends BaseModel
 {
@@ -15,6 +16,8 @@ class OrderItem extends BaseModel
         'user_id',
         'product_id',
         'campaign_id',
+        'item_type',
+        'title',
         'itemable_type',
         'itemable_id',
         'price',
@@ -31,6 +34,7 @@ class OrderItem extends BaseModel
     {
         return [
             'quantity' => 'integer',
+            'item_type' => LineItemTypeEnum::class,
             'price' => 'decimal:2',
             'unit_cost' => 'decimal:2',
             'base_price' => 'decimal:0',

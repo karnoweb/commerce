@@ -39,17 +39,28 @@ Revisit packaging order pricing / discount evaluation only after introducing add
 
 ## Canonical package-safe services (new, additive)
 
-Cart → checkout → payment → refund → wallet as retry-safe, transactional operations, callable via `src/Builders/*` fluent entry points off the `Commerce` facade (`Commerce::cart()`, `checkout()`, `payment()`, `refund()`, `wallet()`). Full walkthrough: `docs/usage/quickstart.md`.
+Cart → checkout → payment → refund/returns → wallet as retry-safe, transactional operations, callable via `src/Builders/*` fluent entry points off the `Commerce` facade (`Commerce::cart()`, `checkout()`, `payment()`, `refund()`, `returns()`, `wallet()`). Full walkthrough: `docs/usage/quickstart.md`.
 
 | Service | Owns | Notes |
 |---------|------|-------|
-| `CartService` | Cart lines (`OrderItem`, `order_id = null`) | No auth/session/media — `$userId` and `productId` are explicit soft references |
-| `CheckoutService` | `Order` creation from cart + optional `Invoice` | `placeFromCart()` sets `OrderStatusEnum::PENDING`; idempotent via `orders.idempotency_key` |
-| `PaymentService` | `Payment` lifecycle | `initiate()` (PENDING, idempotent via `payments.idempotency_key`); `confirm()` (→ PAID, creates `Transaction`, idempotent via `transactions.tracking_code`) |
-| `RefundService` | `OrderReturn` + order/payment status | Always creates `OrderReturn`; flips to `REFUNDED` only once returns sum reaches order total; idempotent via `order_returns.idempotency_key` |
+| `CartService` | Cart lines (`OrderItem`, `order_id = null`) — product/service/text/custom | No auth/session/media — `$userId`, `productId`, `itemableType/Id` are explicit soft references |
+| `CheckoutService` | `Order` creation from cart + optional `Invoice` | `placeFromCart()` sets `OrderStatusEnum::PENDING`; idempotent via `orders.idempotency_key`; totals computed via `TotalsCalculatorContract`, order-level tax/discount via `TaxCalculatorContract`/`DiscountCalculatorContract` when the caller omits an explicit amount |
+| `PaymentService` | `Payment` lifecycle | `initiate()` (PENDING, idempotent via `payments.idempotency_key`, dispatches `PaymentInitiated`); `confirm()` (→ PAID, creates `Transaction`, idempotent via `transactions.tracking_code`) |
+| `RefundService` | `OrderReturn` + order/payment status (amount-only, legacy) | Always creates `OrderReturn`; flips to `REFUNDED` only once returns sum reaches order total; idempotent via `order_returns.idempotency_key` |
+| `ReturnService` | `OrderReturn` + `OrderReturnItem` + order/payment status (quantity-based) | Validates each line against sold − already-returned quantity; snapshots `unit_price_snapshot`/`amount` per line; same `REFUNDED` transition rule as `RefundService` (shared `order_returns.amount` column); dispatches `ReturnCreated` |
 | `WalletService` | `WalletTransaction` credit/debit | Idempotent via `wallet_transactions.idempotency_key` |
 
 These services never call a gateway, SMS, or mail — they only persist outcomes the host already obtained and dispatch lean events after commit. All idempotency keys are optional, nullable-unique DB columns (Option A from the mission spec): retrying with the same key + payload returns the existing record; a different payload throws `Karnoweb\Commerce\Exceptions\IdempotencyConflict`.
+
+### Tax/Discount/Totals extension points (`src/Contracts/*`)
+
+`TaxCalculatorContract`, `DiscountCalculatorContract`, `TotalsCalculatorContract` are bound to no-op defaults (`Support\Calculators\Null*Calculator`, `DefaultTotalsCalculator`: sum lines + shipping − discount + tax). Hosts override by rebinding the interface in their own service provider — no package changes needed:
+
+```php
+$this->app->bind(TaxCalculatorContract::class, MyVatCalculator::class);
+```
+
+`CheckoutService` only asks the bound calculator to compute tax/discount when the caller omits `taxAmount()`/`discountAmount()` entirely; an explicit amount (including `0`) always wins.
 
 ## Facade (`Commerce`)
 
@@ -58,6 +69,6 @@ These services never call a gateway, SMS, or mail — they only persist outcomes
 - `Commerce::config('…')` → commerce config
 - `Commerce::model('order')` → configured model class
 - `Commerce::macro('openOrders', fn ($userId) => …)` → host-specific helpers
-- `Commerce::cart()` / `checkout()` / `payment()` / `refund()` / `wallet()` → fresh `Builders\*Builder` instance per call (see above)
+- `Commerce::cart()` / `checkout()` / `payment()` / `refund()` / `returns()` / `wallet()` → fresh `Builders\*Builder` instance per call (see above)
 
-Host coordinators dispatch **both** rich host events (CRM/notifications) and lean package events (`OrderCreated`, `OrderPaid`, `InvoiceFullyPaid`, `RefundCreated`) through `CommerceEventDispatcher`. The canonical services above dispatch the lean events themselves after commit; hosts only need to also fire their rich counterparts if they want the CRM/notification bridge.
+Host coordinators dispatch **both** rich host events (CRM/notifications) and lean package events (`OrderCreated`, `OrderPaid`, `InvoiceFullyPaid`, `RefundCreated`, `PaymentInitiated`, `ReturnCreated`) through `CommerceEventDispatcher`. The canonical services above dispatch the lean events themselves after commit; hosts only need to also fire their rich counterparts if they want the CRM/notification bridge.

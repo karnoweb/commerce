@@ -6,6 +6,9 @@ namespace Karnoweb\Commerce\Services;
 
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Karnoweb\Commerce\Contracts\DiscountCalculatorContract;
+use Karnoweb\Commerce\Contracts\TaxCalculatorContract;
+use Karnoweb\Commerce\Contracts\TotalsCalculatorContract;
 use Karnoweb\Commerce\Enums\OrderStatusEnum;
 use Karnoweb\Commerce\Enums\OrderTypeEnum;
 use Karnoweb\Commerce\Events\OrderCreated;
@@ -18,14 +21,21 @@ use Karnoweb\Commerce\Support\ResolvesConfiguredModels;
 
 /**
  * Canonical order/invoice creation. Package-safe: no session/auth helpers,
- * no HTTP access, no shop/host model dependency. Pricing/discount evaluation stays in the
- * host; this service only persists the cart snapshot and totals it is given.
+ * no HTTP access, no shop/host model dependency. Pricing/discount evaluation
+ * stays in the host by default; this service persists the cart snapshot and
+ * totals it is given, computing order-level tax/discount/totals via the
+ * bound calculator contracts only when the caller omits an explicit amount.
  */
 class CheckoutService
 {
     use ResolvesConfiguredModels;
 
-    public function __construct(private readonly CartService $cartService) {}
+    public function __construct(
+        private readonly CartService $cartService,
+        private readonly TaxCalculatorContract $taxCalculator,
+        private readonly DiscountCalculatorContract $discountCalculator,
+        private readonly TotalsCalculatorContract $totalsCalculator,
+    ) {}
 
     /**
      * Create an Order from the user's cart items (OrderItem rows with a
@@ -66,20 +76,29 @@ class CheckoutService
                 throw new CannotCheckoutEmptyCart($userId);
             }
 
-            $subtotal = 0.0;
-            $itemDiscount = 0.0;
-            $itemTax = 0.0;
-
-            foreach ($items as $item) {
-                $subtotal += (float) $item->sale_price * (int) $item->quantity;
-                $itemDiscount += (float) $item->discount_amount;
-                $itemTax += (float) $item->tax_amount;
-            }
-
             $shippingAmount = (float) ($data['shipping_amount'] ?? 0);
-            $discountAmount = $itemDiscount + (float) ($data['discount_amount'] ?? 0);
-            $taxAmount = $itemTax + (float) ($data['tax_amount'] ?? 0);
-            $total = $subtotal - $discountAmount + $taxAmount + $shippingAmount;
+
+            $baseContext = [
+                'user_id' => $userId,
+                'branch_id' => $data['branch_id'] ?? null,
+                'shipping_amount' => $shippingAmount,
+            ];
+
+            // An explicit amount (even 0) always wins; only ask the bound
+            // calculator to compute one when the caller omitted the key entirely.
+            $taxAmount = array_key_exists('tax_amount', $data)
+                ? (float) $data['tax_amount']
+                : (float) $this->taxCalculator->calculate($items, $baseContext);
+
+            $discountAmount = array_key_exists('discount_amount', $data)
+                ? (float) $data['discount_amount']
+                : (float) $this->discountCalculator->calculate($items, $baseContext);
+
+            $totals = $this->totalsCalculator->calculate($items, [
+                ...$baseContext,
+                'tax_amount' => $taxAmount,
+                'discount_amount' => $discountAmount,
+            ]);
 
             $orderClass = static::model('order');
 
@@ -90,11 +109,11 @@ class CheckoutService
                 'branch_id' => $data['branch_id'] ?? null,
                 'status' => OrderStatusEnum::PENDING,
                 'type' => OrderTypeEnum::SALE,
-                'subtotal' => $subtotal,
-                'discount_amount' => $discountAmount,
-                'tax_amount' => $taxAmount,
-                'shipping_amount' => $shippingAmount,
-                'total' => $total,
+                'subtotal' => $totals['subtotal'],
+                'discount_amount' => $totals['discount_amount'],
+                'tax_amount' => $totals['tax_amount'],
+                'shipping_amount' => $totals['shipping_amount'],
+                'total' => $totals['total'],
                 'order_date' => now()->toDateString(),
             ]);
 

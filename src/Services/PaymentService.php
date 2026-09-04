@@ -12,6 +12,7 @@ use Karnoweb\Commerce\Enums\PaymentStatusEnum;
 use Karnoweb\Commerce\Enums\PaymentTypeEnum;
 use Karnoweb\Commerce\Events\InvoiceFullyPaid;
 use Karnoweb\Commerce\Events\OrderPaid;
+use Karnoweb\Commerce\Events\PaymentInitiated;
 use Karnoweb\Commerce\Exceptions\CannotConfirmAlreadyPaidPayment;
 use Karnoweb\Commerce\Exceptions\CannotPayCancelledOrder;
 use Karnoweb\Commerce\Exceptions\IdempotencyConflict;
@@ -61,7 +62,7 @@ class PaymentService
 
             $paymentClass = static::model('payment');
 
-            return $paymentClass::create([
+            $payment = $paymentClass::create([
                 'user_id' => $order->user_id,
                 'branch_id' => $order->branch_id ?? null,
                 'order_id' => $order->id,
@@ -72,6 +73,15 @@ class PaymentService
                 'type' => $type instanceof PaymentTypeEnum ? $type : PaymentTypeEnum::from($type),
                 'status' => PaymentStatusEnum::PENDING,
             ]);
+
+            CommerceEventDispatcher::dispatch(new PaymentInitiated(
+                orderId: $order->id,
+                paymentId: $payment->id,
+                amount: $amount,
+                userId: $order->user_id,
+            ));
+
+            return $payment;
         });
     }
 

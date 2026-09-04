@@ -5,10 +5,19 @@ use Karnoweb\Commerce\Events\OrderCreated;
 use Karnoweb\Commerce\Events\OrderPaid;
 use Karnoweb\Commerce\Events\InvoiceFullyPaid;
 use Karnoweb\Commerce\Events\RefundCreated;
+use Karnoweb\Commerce\Events\PaymentInitiated;
+use Karnoweb\Commerce\Events\ReturnCreated;
 use Karnoweb\Commerce\Support\CommerceEventDispatcher;
 
 CommerceEventDispatcher::dispatch(new OrderCreated(
     orderId: (int) $order->id,
+    userId: $order->user_id,
+));
+
+CommerceEventDispatcher::dispatch(new PaymentInitiated(
+    orderId: (int) $order->id,
+    paymentId: (int) $payment->id,
+    amount: $payment->amount,
     userId: $order->user_id,
 ));
 
@@ -28,19 +37,31 @@ CommerceEventDispatcher::dispatch(new RefundCreated(
     amount: $orderReturn->amount,
     userId: $order->user_id,
 ));
+
+CommerceEventDispatcher::dispatch(new ReturnCreated(
+    orderId: (int) $order->id,
+    orderReturnId: (int) $orderReturn->id,
+    totalAmount: $orderReturn->amount,
+    items: [
+        ['orderItemId' => 1, 'quantity' => 1, 'amount' => 1_000_000],
+    ],
+    userId: $order->user_id,
+));
 ```
 
 اگر داخل تراکنش DB باشید، ارسال به بعد از commit موکول می‌شود.
 
 ## منتشرکننده‌های Facade
 
-اگر از `Commerce::checkout()`, `Commerce::payment()` یا `Commerce::refund()` استفاده کنید ([quickstart.md](quickstart.md))، این رویدادها را خودِ سرویس‌های پکیج بعد از commit ارسال می‌کنند — نیازی به dispatch دستی نیست:
+اگر از `Commerce::checkout()`, `Commerce::payment()`, `Commerce::refund()` یا `Commerce::returns()` استفاده کنید ([quickstart.md](quickstart.md))، این رویدادها را خودِ سرویس‌های پکیج بعد از commit ارسال می‌کنند — نیازی به dispatch دستی نیست:
 
 | متد Facade | رویداد |
 |------------|--------|
-| `checkout()->place()` | `OrderCreated` |
-| `payment()->confirm()` | `OrderPaid` + `InvoiceFullyPaid` |
-| `refund()->process()` | `RefundCreated` |
+| `checkout()->place()` | `OrderCreated` (معادل مفهومی «OrderPlaced») |
+| `payment()->initiate()` | `PaymentInitiated` |
+| `payment()->confirm()` | `OrderPaid` (معادل مفهومی «PaymentConfirmed») + `InvoiceFullyPaid` |
+| `refund()->process()` | `RefundCreated` (فقط مبلغ؛ legacy) |
+| `returns()->finalizeAndRefund*()` | `ReturnCreated` (شامل `items: [{orderItemId, quantity, amount}]`) |
 
 ## الگوی دوگانه در میزبان
 
